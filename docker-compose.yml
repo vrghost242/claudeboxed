@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# docker-compose.yml — Claude Code
+#
+# Usage:
+#   docker compose run --rm claude                    # interactive session
+#   docker compose run --rm claude "Fix the tests"    # one-shot prompt
+#   docker compose run --rm claude-unsafe "Refactor"  # skip permission prompts
+# ─────────────────────────────────────────────────────────────────────────────
+
+services:
+
+  # ── Standard interactive session ─────────────────────────────────────────
+  claude:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: claude-code:latest
+
+    # Using claude.ai login — no API key needed.
+    # To switch to API key auth: set ANTHROPIC_API_KEY and add it here,
+    # then remove the ~/.claude.json volume mount below.
+    environment:
+      - GITHUB_PERSONAL_ACCESS_TOKEN=${GITHUB_PERSONAL_ACCESS_TOKEN}
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      # Uncomment to point at a custom endpoint (e.g. Docker Model Runner):
+      # - ANTHROPIC_BASE_URL=${ANTHROPIC_BASE_URL:-}
+
+    volumes:
+      # ── Your project (read/write) ────────────────────────────────────────
+      - type: bind
+        source: ${WORKSPACE_PATH:-.}
+        target: /workspace
+
+      # ── Claude config & memory (persists across container runs) ──────────
+      - type: bind
+        source: ${HOME}/.claude
+        target: /home/claude/.claude
+
+      # ── Claude main config file ───────────────────────────────────────────
+      - type: bind
+        source: ${HOME}/.claude.json
+        target: /home/claude/.claude.json
+
+      # ── SSH keys for git push/pull (read-only) ────────────────────────────
+      - type: bind
+        source: ${HOME}/.ssh
+        target: /home/claude/.ssh
+        read_only: true
+
+    working_dir: /workspace
+    stdin_open: true
+    tty: true
+
+  # ── Unsafe mode: skips permission prompts (use inside containers only!) ───
+  claude-unsafe:
+    extends:
+      service: claude
+    entrypoint: ["claude", "--dangerously-skip-permissions"]

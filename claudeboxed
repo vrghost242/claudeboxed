@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# cc — Claude Code container launcher
+#
+# Usage:
+#   ./cc                          Start an interactive Claude Code session
+#   ./cc "Fix the failing tests"  Run a one-shot prompt and exit
+#   ./cc --unsafe                 Start without permission prompts (devcontainer)
+#   ./cc --build                  Rebuild the image before starting
+#   ./cc --help                   Show this help
+#
+# Prerequisites:
+#   - Docker running
+#   - Logged in to claude.ai via: claude /login
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+IMAGE_NAME="claude-code:latest"
+UNSAFE=false
+BUILD=false
+PROMPT_ARGS=()
+
+# ── Argument parsing ──────────────────────────────────────────────────────────
+for arg in "$@"; do
+  case "$arg" in
+    --unsafe)   UNSAFE=true ;;
+    --build)    BUILD=true ;;
+    --help|-h)
+      sed -n '/^# Usage:/,/^# Pre/p' "$0" | grep '^#' | sed 's/^# \?//'
+      exit 0
+      ;;
+    *)          PROMPT_ARGS+=("$arg") ;;
+  esac
+done
+
+# ── Guard: ~/.claude directory and ~/.claude.json must exist for mounts ───────
+mkdir -p "${HOME}/.claude"
+touch "${HOME}/.claude.json"
+
+# ── Build image if requested or not yet present ───────────────────────────────
+if $BUILD || ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+  echo "🔨  Building Claude Code image..."
+  docker build \
+    --platform linux/$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    -t "$IMAGE_NAME" \
+    "$SCRIPT_DIR"
+fi
+
+# ── Compose the docker run command ────────────────────────────────────────────
+DOCKER_ARGS=(
+  run --rm
+  --interactive
+  --tty
+  -v "${PWD}:/workspace"
+  -v "${HOME}/.claude:/home/claude/.claude"
+  -v "${HOME}/.claude.json:/home/claude/.claude.json"
+  -w /workspace
+)
+
+# Mount SSH keys read-only if they exist (for git over SSH)
+if [[ -d "${HOME}/.ssh" ]]; then
+  DOCKER_ARGS+=(-v "${HOME}/.ssh:/home/claude/.ssh:ro")
+fi
+
+DOCKER_ARGS+=("$IMAGE_NAME")
+
+if $UNSAFE; then
+  DOCKER_ARGS+=(--dangerously-skip-permissions)
+fi
+
+if [[ ${#PROMPT_ARGS[@]} -gt 0 ]]; then
+  DOCKER_ARGS+=("${PROMPT_ARGS[@]}")
+fi
+
+echo "🚀  Launching Claude Code in Docker..."
+echo "    Workspace: ${PWD}"
+echo ""
+
+exec docker "${DOCKER_ARGS[@]}"
