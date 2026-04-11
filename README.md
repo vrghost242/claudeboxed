@@ -83,6 +83,7 @@ WORKSPACE_PATH=/path/to/myproject docker compose run --rm claude
 | `~/.claude` | `/home/claude/.claude` | Persists settings, memory, and session history |
 | `~/.claude.json` | `/home/claude/.claude.json` | Claude config file |
 | `~/.ssh` | `/home/claude/.ssh` | SSH keys for git push/pull (read-only) |
+| `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket for building/running sibling containers |
 
 ## How it works
 
@@ -101,10 +102,21 @@ The image ships with language servers and tooling for three ecosystems:
 | Python | `mypy`, `ruff`, `black`, `pytest`, `uv` | `pyright` |
 | Rust | `cargo`, `rustfmt`, `clippy` | `rust-analyzer` |
 
+## Docker-in-Docker (sibling containers)
+
+The host's Docker socket is mounted into the container, so Claude Code can build and run Docker containers. These are **sibling containers** — they run on the host Docker daemon, not nested inside the Claude Code container. This means:
+
+- Containers Claude builds are visible to both you and Claude (`docker ps` works on both sides)
+- Port mappings (`-p 3000:3000`) are exposed on the host, so you can access web apps from your browser
+- From inside the Claude Code container, reach sibling containers via `host.docker.internal`
+
+If you don't want Docker socket access, remove the `/var/run/docker.sock` volume mount from `docker-compose.yml` or `claudeboxed`.
+
 ## Security notes
 
 - The container runs as a **non-root** user (`claude`, uid 1000 by default, remapped at runtime).
 - `--unsafe` / `--dangerously-skip-permissions` bypasses Claude's interactive approval prompts. Only use it inside containers with trusted repositories — the container boundary is your protection.
 - SSH keys are mounted **read-only**.
 - Your host filesystem outside `$PWD` is not accessible to Claude.
+- The Docker socket is mounted so Claude can build/run containers. This grants root-equivalent access to the host Docker daemon — only use in trusted environments.
 - Do not commit `.env` or `.mcp.json` — they may contain API keys and tokens. Both are in `.gitignore`.

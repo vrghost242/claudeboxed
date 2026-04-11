@@ -85,5 +85,17 @@ if [ -f /home/claude/.claude/plugins/known_marketplaces.json ] && command -v jq 
     fi
 fi
 
+# ── Grant claude access to the Docker socket (sibling containers) ─────────────
+if [ -S /var/run/docker.sock ]; then
+    DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+    # Reuse the existing group if one owns this gid, otherwise create 'docker'
+    DOCKER_GROUP=$(getent group "$DOCKER_GID" | cut -d: -f1 || true)
+    if [ -z "$DOCKER_GROUP" ]; then
+        groupadd --gid "$DOCKER_GID" docker
+        DOCKER_GROUP="docker"
+    fi
+    usermod -aG "$DOCKER_GROUP" claude
+fi
+
 # ── Drop privileges and exec Claude Code ─────────────────────────────────────
 exec gosu claude claude "$@"

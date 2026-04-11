@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────────────
-# cc — Claude Code container launcher
+# claudeboxed — Claude Code container launcher
 #
 # Usage:
-#   ./cc                          Start an interactive Claude Code session
-#   ./cc "Fix the failing tests"  Run a one-shot prompt and exit
-#   ./cc --unsafe                 Start without permission prompts (devcontainer)
-#   ./cc --build                  Rebuild the image before starting
-#   ./cc --help                   Show this help
+#   ./claudeboxed                          Start an interactive Claude Code session
+#   ./claudeboxed "Fix the failing tests"  Run a one-shot prompt and exit
+#   ./claudeboxed --unsafe                 Start without permission prompts (devcontainer)
+#   ./claudeboxed --build                  Rebuild the image before starting
+#   ./claudeboxed --help                   Show this help
 #
 # Prerequisites:
 #   - Docker running
@@ -61,6 +61,12 @@ DOCKER_ARGS=(
 # Mount SSH keys read-only if they exist (for git over SSH)
 if [[ -d "${HOME}/.ssh" ]]; then
   DOCKER_ARGS+=(-v "${HOME}/.ssh:/home/claude/.ssh:ro")
+fi
+
+# Mount Docker socket so Claude can build/run sibling containers
+if [[ -S /var/run/docker.sock ]]; then
+  DOCKER_ARGS+=(-v /var/run/docker.sock:/var/run/docker.sock)
+  DOCKER_ARGS+=(--add-host "host.docker.internal:host-gateway")
 fi
 
 DOCKER_ARGS+=("$IMAGE_NAME")

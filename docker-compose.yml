@@ -47,6 +47,17 @@ services:
         target: /home/claude/.ssh
         read_only: true
 
+      # ── Docker socket — lets Claude build/run sibling containers ─────────
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+
+    # Containers built by Claude are siblings on the host Docker daemon.
+    # Use host.docker.internal to reach services running on the host / in
+    # sibling containers. On Linux, add-host makes this name resolve.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     working_dir: /workspace
     stdin_open: true
     tty: true
@@ -55,4 +66,4 @@ services:
   claude-unsafe:
     extends:
       service: claude
-    entrypoint: ["claude", "--dangerously-skip-permissions"]
+    command: ["--dangerously-skip-permissions"]
