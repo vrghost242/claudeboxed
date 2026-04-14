@@ -7,7 +7,7 @@
 #   ./claudeboxed "Fix the failing tests"  Run a one-shot prompt and exit
 #   ./claudeboxed --unsafe                 Start without permission prompts (devcontainer)
 #   ./claudeboxed --build                  Rebuild the image before starting
-#   ./claudeboxed --host-network            Share host network (all ports accessible)
+#   ./claudeboxed --host-network            Force host network (Linux default, no-op on Mac)
 #   ./claudeboxed --worktree content       Run in a git worktree (isolated branch)
 #   ./claudeboxed --help                   Show this help
 #
@@ -134,7 +134,38 @@ if [[ -S /var/run/docker.sock ]]; then
   DOCKER_ARGS+=(--add-host "host.docker.internal:host-gateway")
 fi
 
+# ── Port forwarding (macOS: read .portforwarding, Linux: host network) ────────
+IS_MACOS=false
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  IS_MACOS=true
+fi
+
 if $HOST_NETWORK; then
+  # Explicit --host-network flag: honour it regardless of OS.
+  DOCKER_ARGS+=(--network host)
+elif $IS_MACOS; then
+  # macOS: --network host doesn't work (connects to the VM, not the Mac).
+  # Publish ports listed in .portforwarding instead.
+  PORTFILE="${WORKSPACE_DIR}/.portforwarding"
+  if [[ -f "$PORTFILE" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%%#*}"        # strip comments
+      line="${line// /}"        # strip whitespace
+      [[ -z "$line" ]] && continue
+      if [[ "$line" == *:* ]]; then
+        # Explicit host:container mapping (e.g. 9090:8080, 8001-8006:8001-8006)
+        DOCKER_ARGS+=(-p "$line")
+      elif [[ "$line" == *-* ]]; then
+        # Port range (e.g. 8001-8006)
+        DOCKER_ARGS+=(-p "${line}:${line}")
+      else
+        # Single port (e.g. 3000)
+        DOCKER_ARGS+=(-p "${line}:${line}")
+      fi
+    done < "$PORTFILE"
+  fi
+else
+  # Linux: host networking works natively — use it by default.
   DOCKER_ARGS+=(--network host)
 fi
 
@@ -152,6 +183,20 @@ echo "🚀  Launching Claude Code in Docker..."
 echo "    Workspace: ${WORKSPACE_DIR}"
 if [[ -n "$WORKTREE_NAME" ]]; then
   echo "    Worktree:  ${WORKTREE_NAME} (branch: ${WORKTREE_BRANCH})"
+fi
+if $HOST_NETWORK; then
+  echo "    Network:   host (--host-network)"
+elif ! $IS_MACOS; then
+  echo "    Network:   host (Linux default)"
+elif [[ -f "${WORKSPACE_DIR}/.portforwarding" ]]; then
+  FORWARDED_PORTS=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"; line="${line// /}"
+    [[ -n "$line" ]] && FORWARDED_PORTS+=("$line")
+  done < "${WORKSPACE_DIR}/.portforwarding"
+  if [[ ${#FORWARDED_PORTS[@]} -gt 0 ]]; then
+    echo "    Ports:     ${FORWARDED_PORTS[*]}"
+  fi
 fi
 echo ""
 

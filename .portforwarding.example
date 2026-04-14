@@ -1,0 +1,23 @@
+# .portforwarding — ports to expose from the Claude container (macOS only)
+#
+# On macOS, Docker's --network host connects to the Linux VM, not the Mac,
+# so ports must be published explicitly. List them here, one per line.
+#
+# On Linux, the container uses host networking by default and this file
+# is ignored (all ports are already accessible).
+#
+# Format:
+#   <port>              — publish container port to the same host port
+#   <from>-<to>         — publish a range of ports (e.g. 8001-8006)
+#   <host>:<container>  — publish container port to a different host port
+#
+# Lines starting with # are comments. Blank lines are ignored.
+#
+# Tip: dev servers inside the container must bind to 0.0.0.0, not 127.0.0.1,
+# for port forwarding to work. Most frameworks: --host 0.0.0.0
+#
+# Tip: add "127.0.0.1 claudeboxed" to /etc/hosts on your Mac, then access
+# services at http://claudeboxed:<port>
+
+3000
+8080
