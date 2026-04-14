@@ -15,6 +15,8 @@
 #                 LSP: pyright
 #   Rust        — rustup, cargo, rustfmt, clippy
 #                 LSP: rust-analyzer (via rustup component)
+#   Browser     — playwright, @playwright/mcp (headless Chromium)
+#   Git/GitHub  — git, gh CLI
 # ─────────────────────────────────────────────────────────────────────────────
 FROM node:20-slim
 
@@ -50,6 +52,17 @@ RUN install -m 0755 -d /etc/apt/keyrings \
     && apt-get install -y --no-install-recommends docker-ce-cli docker-compose-plugin \
     && rm -rf /var/lib/apt/lists/*
 
+# ── GitHub CLI ────────────────────────────────────────────────────────────────
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+        -o /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && chmod a+r /etc/apt/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] \
+       https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
 # ── TypeScript tools + LSP ────────────────────────────────────────────────────
 RUN npm install -g \
     typescript \
@@ -58,6 +71,14 @@ RUN npm install -g \
     prettier \
     typescript-language-server \
     @anthropic-ai/claude-code
+
+# ── Playwright CLI + Chromium (headless browser for frontend testing) ─────────
+# PLAYWRIGHT_BROWSERS_PATH is set so browsers are installed to a shared location
+# accessible after the claude user uid is remapped at runtime.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN npm install -g @playwright/mcp playwright \
+    && npx playwright install --with-deps chromium \
+    && chmod -R o+rX /opt/playwright-browsers
 
 # ── Python tools + LSP ────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --break-system-packages \
