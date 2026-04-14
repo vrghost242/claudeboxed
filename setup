@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# setup — check and guide claudeboxed configuration
+#
+# Checks what's already configured and walks you through anything missing.
+# Does not handle credentials directly — delegates to existing tools.
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENV_FILE="${SCRIPT_DIR}/.env"
+
+# ── Formatting helpers ───────────────────────────────────────────────────────
+pass()  { printf "  \033[32m✔\033[0m  %s\n" "$1"; }
+fail()  { printf "  \033[31m✘\033[0m  %s\n" "$1"; }
+info()  { printf "  \033[33m→\033[0m  %s\n" "$1"; }
+heading() { printf "\n\033[1m%s\033[0m\n" "$1"; }
+
+# ── .env helpers ─────────────────────────────────────────────────────────────
+env_get() {
+    local key="$1"
+    if [[ -f "$ENV_FILE" ]]; then
+        grep -E "^${key}=" "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2-
+    fi
+}
+
+env_set() {
+    local key="$1" value="$2"
+    if [[ -f "$ENV_FILE" ]] && grep -qE "^${key}=" "$ENV_FILE" 2>/dev/null; then
+        sed -i.bak "s|^${key}=.*|${key}=${value}|" "$ENV_FILE" && rm -f "${ENV_FILE}.bak"
+    else
+        echo "${key}=${value}" >> "$ENV_FILE"
+    fi
+}
+
+# Track overall status
+ISSUES=0
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "1. Docker"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
+    pass "Docker is running"
+else
+    fail "Docker is not running or not installed"
+    info "Install: https://www.docker.com/products/docker-desktop/"
+    ((ISSUES++))
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "2. Claude Code authentication"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ -d "${HOME}/.claude" ]] && [[ -f "${HOME}/.claude.json" ]]; then
+    pass "Claude config found (~/.claude and ~/.claude.json)"
+else
+    fail "Claude config not found"
+    info "Log in on your host first:  claude /login"
+    ((ISSUES++))
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "3. Git identity"
+# ─────────────────────────────────────────────────────────────────────────────
+
+GIT_CONFIG=""
+if [[ -f "${HOME}/.gitconfig" ]]; then
+    GIT_CONFIG="${HOME}/.gitconfig"
+elif [[ -f "${XDG_CONFIG_HOME:-${HOME}/.config}/git/config" ]]; then
+    GIT_CONFIG="${XDG_CONFIG_HOME:-${HOME}/.config}/git/config"
+fi
+
+if [[ -n "$GIT_CONFIG" ]]; then
+    GIT_NAME=$(git config --global user.name 2>/dev/null || true)
+    GIT_EMAIL=$(git config --global user.email 2>/dev/null || true)
+    if [[ -n "$GIT_NAME" ]] && [[ -n "$GIT_EMAIL" ]]; then
+        pass "Git identity: ${GIT_NAME} <${GIT_EMAIL}>"
+    else
+        fail "Git config exists but name/email not set"
+        info "Run:  git config --global user.name \"Your Name\""
+        info "Run:  git config --global user.email \"you@example.com\""
+        ((ISSUES++))
+    fi
+else
+    fail "No git config found (~/.gitconfig or ~/.config/git/config)"
+    info "Run:  git config --global user.name \"Your Name\""
+    info "Run:  git config --global user.email \"you@example.com\""
+    ((ISSUES++))
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "4. GitHub access (GH_TOKEN)"
+# ─────────────────────────────────────────────────────────────────────────────
+
+GH_TOKEN="${GH_TOKEN:-$(env_get GH_TOKEN)}"
+
+if [[ -n "$GH_TOKEN" ]]; then
+    pass "GH_TOKEN is set"
+else
+    fail "GH_TOKEN not found (not in environment or .env)"
+    info "Create a token at: https://github.com/settings/tokens"
+    info "Recommended scopes: repo, read:org, workflow"
+    echo ""
+    read -rp "  Paste your GH_TOKEN (or press Enter to skip): " TOKEN_INPUT
+    if [[ -n "$TOKEN_INPUT" ]]; then
+        env_set "GH_TOKEN" "$TOKEN_INPUT"
+        pass "GH_TOKEN saved to .env"
+        info "The claudeboxed script reads .env automatically"
+        info "For shell use, add to your profile:  export GH_TOKEN=<token>"
+    else
+        info "Skipped — you can set it later in .env or your shell profile"
+        ((ISSUES++))
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "5. SSH keys"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ -d "${HOME}/.ssh" ]] && ls "${HOME}/.ssh/id_"* &>/dev/null 2>&1; then
+    pass "SSH keys found in ~/.ssh"
+else
+    fail "No SSH keys found"
+    info "For git over SSH, generate a key:  ssh-keygen -t ed25519"
+    info "Then add to GitHub:  https://github.com/settings/keys"
+    info "Not required if using GH_TOKEN for HTTPS access"
+    ((ISSUES++))
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "6. AWS credentials (optional)"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if [[ -d "${HOME}/.aws" ]] && [[ -f "${HOME}/.aws/credentials" || -f "${HOME}/.aws/config" ]]; then
+    AWS_PROFILE_NAME="${AWS_PROFILE:-default}"
+    pass "AWS config found (~/.aws) — profile: ${AWS_PROFILE_NAME}"
+    info "Tip: use a scoped-down profile for Claude (e.g. 'claude-sandbox')"
+    info "Create one with:  aws configure --profile claude-sandbox"
+else
+    info "AWS credentials not found (~/.aws) — skipping"
+    info "To set up:  aws configure --profile claude-sandbox"
+    info "Scope permissions to only what Claude needs (e.g. ec2:Describe*)"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "7. MCP servers (optional)"
+# ─────────────────────────────────────────────────────────────────────────────
+
+MCP_CONFIGURED=false
+if [[ -f "${SCRIPT_DIR}/.mcp.json" ]]; then
+    pass "Project-level MCP config found (.mcp.json)"
+    MCP_CONFIGURED=true
+fi
+
+if [[ -f "${HOME}/.claude/settings.json" ]] && grep -q "mcpServers" "${HOME}/.claude/settings.json" 2>/dev/null; then
+    pass "User-level MCP servers configured (~/.claude/settings.json)"
+    MCP_CONFIGURED=true
+fi
+
+if ! $MCP_CONFIGURED; then
+    info "No MCP servers configured"
+    info "For credential-bearing servers, use user-level config:"
+    info "  claude mcp add --scope user github -- npx -y @modelcontextprotocol/server-github"
+    info "  claude mcp add --scope user playwright -- npx @playwright/mcp --headless --browser chromium"
+    info "  claude mcp add --scope user aws -- uvx awslabs.aws-api-mcp-server@latest"
+    info "Or copy the template:  cp .mcp.json.example .mcp.json"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+heading "8. Docker image"
+# ─────────────────────────────────────────────────────────────────────────────
+
+if docker image inspect claude-code:latest &>/dev/null 2>&1; then
+    pass "claude-code:latest image exists"
+    info "Run ./claudeboxed --build to rebuild after setup changes"
+else
+    info "Image not yet built — it will be built on first ./claudeboxed run"
+    info "Or build now:  ./claudeboxed --build"
+fi
+
+# ── Summary ──────────────────────────────────────────────────────────────────
+echo ""
+if [[ $ISSUES -eq 0 ]]; then
+    printf "\033[32mAll checks passed. Run ./claudeboxed to start.\033[0m\n"
+else
+    printf "\033[33m%d issue(s) to resolve. See above for guidance.\033[0m\n" "$ISSUES"
+fi

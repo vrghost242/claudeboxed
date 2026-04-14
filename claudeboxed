@@ -34,6 +34,13 @@ for arg in "$@"; do
   esac
 done
 
+# ── Source .env if present (picks up GH_TOKEN, AWS_REGION, etc.) ─────────────
+if [[ -f "${SCRIPT_DIR}/.env" ]]; then
+  set -a
+  source "${SCRIPT_DIR}/.env"
+  set +a
+fi
+
 # ── Guard: ~/.claude directory and ~/.claude.json must exist for mounts ───────
 mkdir -p "${HOME}/.claude"
 touch "${HOME}/.claude.json"
@@ -58,10 +65,27 @@ DOCKER_ARGS=(
   -w /workspace
 )
 
+# Mount git config read-only if it exists (XDG fallback for Linux)
+if [[ -f "${HOME}/.gitconfig" ]]; then
+  DOCKER_ARGS+=(-v "${HOME}/.gitconfig:/home/claude/.gitconfig:ro")
+elif [[ -f "${XDG_CONFIG_HOME:-${HOME}/.config}/git/config" ]]; then
+  DOCKER_ARGS+=(-v "${XDG_CONFIG_HOME:-${HOME}/.config}/git/config:/home/claude/.gitconfig:ro")
+fi
+
 # Mount SSH keys read-only if they exist (for git over SSH)
 if [[ -d "${HOME}/.ssh" ]]; then
   DOCKER_ARGS+=(-v "${HOME}/.ssh:/home/claude/.ssh:ro")
 fi
+
+# Mount AWS credentials read-only if they exist
+if [[ -d "${HOME}/.aws" ]]; then
+  DOCKER_ARGS+=(-v "${HOME}/.aws:/home/claude/.aws:ro")
+fi
+
+# Pass through environment variables for git and AWS access
+[[ -n "${GH_TOKEN:-}" ]]     && DOCKER_ARGS+=(-e "GH_TOKEN=${GH_TOKEN}")
+[[ -n "${AWS_REGION:-}" ]]   && DOCKER_ARGS+=(-e "AWS_REGION=${AWS_REGION}")
+[[ -n "${AWS_PROFILE:-}" ]]  && DOCKER_ARGS+=(-e "AWS_PROFILE=${AWS_PROFILE}")
 
 # Mount Docker socket so Claude can build/run sibling containers
 if [[ -S /var/run/docker.sock ]]; then

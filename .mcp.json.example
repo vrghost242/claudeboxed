@@ -1,0 +1,36 @@
+{
+  "_comment": [
+    "MCP server configuration for Claude Code.",
+    "",
+    "Placement:",
+    "  Project-level : copy to .mcp.json in the project root.",
+    "  User-level    : run 'claude mcp add --scope user <server>' so config",
+    "                  lives in ~/.claude/ and persists across all projects.",
+    "",
+    "Credential-bearing servers (GitHub, AWS) should be configured at the",
+    "user level so tokens are never committed to a repository.",
+    "",
+    "Enable only the servers you need -- remove or comment out the rest."
+  ],
+  "mcpServers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "<your-github-pat>"
+      }
+    },
+    "playwright": {
+      "command": "npx",
+      "args": ["@playwright/mcp", "--headless", "--browser", "chromium"]
+    },
+    "aws": {
+      "command": "uvx",
+      "args": ["awslabs.aws-api-mcp-server@latest"],
+      "env": {
+        "AWS_REGION": "<your-region>",
+        "AWS_API_MCP_PROFILE_NAME": "default"
+      }
+    }
+  }
+}
