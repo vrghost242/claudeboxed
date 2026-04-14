@@ -97,5 +97,13 @@ if [ -S /var/run/docker.sock ]; then
     usermod -aG "$DOCKER_GROUP" claude
 fi
 
+# ── Configure git credentials from GH_TOKEN ─────────────────────────────────
+# ~/.gitconfig is bind-mounted read-only from the host, so we write a
+# system-level credential helper that feeds GH_TOKEN to git over HTTPS.
+if [ -n "$GH_TOKEN" ]; then
+    git config --system credential.helper \
+        '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+fi
+
 # ── Drop privileges and exec Claude Code ─────────────────────────────────────
 exec gosu claude claude "$@"
