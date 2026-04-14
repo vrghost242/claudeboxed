@@ -7,6 +7,8 @@
 #   ./claudeboxed "Fix the failing tests"  Run a one-shot prompt and exit
 #   ./claudeboxed --unsafe                 Start without permission prompts (devcontainer)
 #   ./claudeboxed --build                  Rebuild the image before starting
+#   ./claudeboxed --host-network            Share host network (all ports accessible)
+#   ./claudeboxed --worktree content       Run in a git worktree (isolated branch)
 #   ./claudeboxed --help                   Show this help
 #
 # Prerequisites:
@@ -19,18 +21,29 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="claude-code:latest"
 UNSAFE=false
 BUILD=false
+HOST_NETWORK=false
+WORKTREE_NAME=""
 PROMPT_ARGS=()
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
-for arg in "$@"; do
-  case "$arg" in
-    --unsafe)   UNSAFE=true ;;
-    --build)    BUILD=true ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --unsafe)        UNSAFE=true; shift ;;
+    --build)         BUILD=true; shift ;;
+    --host-network)  HOST_NETWORK=true; shift ;;
+    --worktree)
+      if [[ -z "${2:-}" || "$2" == --* ]]; then
+        echo "Error: --worktree requires a name (e.g. --worktree content)" >&2
+        exit 1
+      fi
+      WORKTREE_NAME="$2"
+      shift 2
+      ;;
     --help|-h)
       sed -n '/^# Usage:/,/^# Pre/p' "$0" | grep '^#' | sed 's/^# \?//'
       exit 0
       ;;
-    *)          PROMPT_ARGS+=("$arg") ;;
+    *)          PROMPT_ARGS+=("$1"); shift ;;
   esac
 done
 
@@ -39,6 +52,34 @@ if [[ -f "${SCRIPT_DIR}/.env" ]]; then
   set -a
   source "${SCRIPT_DIR}/.env"
   set +a
+fi
+
+# ── Git worktree setup ────────────────────────────────────────────────────────
+# Creates a worktree as a sibling directory and uses it as the workspace.
+# Each worktree gets its own branch (worktree-<name>) and its own container,
+# so multiple agents can work in parallel without git conflicts.
+WORKSPACE_DIR="${PWD}"
+
+if [[ -n "$WORKTREE_NAME" ]]; then
+  GIT_ROOT=$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null) || {
+    echo "Error: --worktree requires a git repository. ${PWD} is not in one." >&2
+    exit 1
+  }
+  REPO_NAME=$(basename "$GIT_ROOT")
+  WORKTREE_DIR="$(dirname "$GIT_ROOT")/${REPO_NAME}-${WORKTREE_NAME}"
+  WORKTREE_BRANCH="worktree-${WORKTREE_NAME}"
+
+  if [[ -d "$WORKTREE_DIR" ]]; then
+    echo "Using existing worktree: ${WORKTREE_DIR}"
+  else
+    echo "Creating worktree: ${WORKTREE_DIR} (branch: ${WORKTREE_BRANCH})"
+    git -C "$GIT_ROOT" worktree add "$WORKTREE_DIR" -b "$WORKTREE_BRANCH" || {
+      echo "Error: failed to create worktree. If branch '${WORKTREE_BRANCH}' already exists, use: git worktree add ${WORKTREE_DIR} ${WORKTREE_BRANCH}" >&2
+      exit 1
+    }
+  fi
+
+  WORKSPACE_DIR="$WORKTREE_DIR"
 fi
 
 # ── Guard: ~/.claude directory and ~/.claude.json must exist for mounts ───────
@@ -59,7 +100,7 @@ DOCKER_ARGS=(
   run --rm
   --interactive
   --tty
-  -v "${PWD}:/workspace"
+  -v "${WORKSPACE_DIR}:/workspace"
   -v "${HOME}/.claude:/home/claude/.claude"
   -v "${HOME}/.claude.json:/home/claude/.claude.json"
   -w /workspace
@@ -93,6 +134,10 @@ if [[ -S /var/run/docker.sock ]]; then
   DOCKER_ARGS+=(--add-host "host.docker.internal:host-gateway")
 fi
 
+if $HOST_NETWORK; then
+  DOCKER_ARGS+=(--network host)
+fi
+
 DOCKER_ARGS+=("$IMAGE_NAME")
 
 if $UNSAFE; then
@@ -104,7 +149,10 @@ if [[ ${#PROMPT_ARGS[@]} -gt 0 ]]; then
 fi
 
 echo "🚀  Launching Claude Code in Docker..."
-echo "    Workspace: ${PWD}"
+echo "    Workspace: ${WORKSPACE_DIR}"
+if [[ -n "$WORKTREE_NAME" ]]; then
+  echo "    Worktree:  ${WORKTREE_NAME} (branch: ${WORKTREE_BRANCH})"
+fi
 echo ""
 
 exec docker "${DOCKER_ARGS[@]}"

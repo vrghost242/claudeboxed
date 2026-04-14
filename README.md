@@ -50,9 +50,30 @@ The script checks your environment (Docker, Claude auth, Git, GitHub, AWS, MCP) 
 
 # Force rebuild the image before starting
 ./claudeboxed --build
+
+# Run in a git worktree (isolated branch for parallel agents)
+./claudeboxed --worktree content
 ```
 
 The first run builds the Docker image automatically.
+
+### Running multiple agents in parallel
+
+Use `--worktree` to give each agent its own isolated branch and working directory. Each worktree runs in a separate container with no git conflicts.
+
+```bash
+# Open separate terminals and launch one agent per service
+./claudeboxed --worktree content --unsafe
+./claudeboxed --worktree document --unsafe
+./claudeboxed --worktree progress --unsafe
+```
+
+Worktrees are created as sibling directories (`../<repo>-<name>`) on branch `worktree-<name>`. When each agent finishes, merge the branch via PR. To clean up:
+
+```bash
+git worktree remove ../<repo>-content
+git branch -d worktree-content
+```
 
 ## Authentication
 
