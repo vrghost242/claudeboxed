@@ -116,7 +116,8 @@ else
         if echo "$GH_TOKEN" | gosu claude gh auth login --with-token 2>/dev/null; then
             echo "✓  GitHub: authenticated via GH_TOKEN"
         else
-            echo "✗  GitHub: GH_TOKEN is invalid or expired"
+            echo "✗  GitHub: GH_TOKEN is invalid or expired — clearing from environment"
+            unset GH_TOKEN
         fi
     fi
 

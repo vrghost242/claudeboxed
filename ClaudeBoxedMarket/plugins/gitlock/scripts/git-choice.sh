@@ -34,12 +34,13 @@ case "$TOOL_NAME" in
         if echo "$COMMAND" | grep -qE '^\s*git\s|^\s*GIT_'; then
             # Check if this is a network operation that needs valid credentials
             if echo "$COMMAND" | grep -qE 'git\s+(push|pull|fetch|clone|remote\s+update|ls-remote)'; then
-                if ! gh auth status &>/dev/null; then
+                # Test stored credentials directly, ignoring any GH_TOKEN env var
+                if ! GH_TOKEN= gh auth status &>/dev/null; then
                     echo "🔑 gitcontrol: credentials expired, attempting refresh..." >&2
 
-                    if gh auth refresh &>/dev/null; then
+                    if GH_TOKEN= gh auth refresh &>/dev/null; then
                         echo "✓  gitcontrol: credentials refreshed" >&2
-                    elif timeout 120 gh auth login --web --git-protocol https 2>&1; then
+                    elif GH_TOKEN= timeout 120 gh auth login --web --git-protocol https 2>&1; then
                         echo "✓  gitcontrol: re-authenticated via web login" >&2
                     else
                         echo "✗  gitcontrol: credential refresh failed (web login timed out or was cancelled)" >&2
@@ -48,6 +49,23 @@ case "$TOOL_NAME" in
                                 hookEventName: "PreToolUse",
                                 permissionDecision: "deny",
                                 permissionDecisionReason: "GitHub credentials are expired and automatic refresh failed. Ask the user to run: gh auth login --web --git-protocol https"
+                            }
+                        }'
+                        exit 0
+                    fi
+                fi
+
+                # If GH_TOKEN is set but stale, it overrides the stored OAuth token
+                # in gh auth git-credential. Tell Claude to bypass it.
+                if [ -n "${GH_TOKEN:-}" ] && ! gh auth status &>/dev/null; then
+                    # Allow if command already clears GH_TOKEN
+                    if ! echo "$COMMAND" | grep -qE 'GH_TOKEN=\s'; then
+                        echo "⚠  gitcontrol: GH_TOKEN env var is stale, command needs override" >&2
+                        jq -n '{
+                            hookSpecificOutput: {
+                                hookEventName: "PreToolUse",
+                                permissionDecision: "deny",
+                                permissionDecisionReason: "Credentials were refreshed but the GH_TOKEN environment variable contains a stale token that overrides them. Retry the command prefixed with GH_TOKEN= (e.g. GH_TOKEN= git pull --rebase)."
                             }
                         }'
                         exit 0
