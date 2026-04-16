@@ -15,7 +15,7 @@
 #
 # This means the image never needs to be rebuilt for a different user.
 # ─────────────────────────────────────────────────────────────────────────────
-set -e
+set -euo pipefail
 
 # ── Detect the uid/gid of the mounted workspace ──────────────────────────────
 # Using /workspace rather than ~/.claude because it's always mounted and its
@@ -44,6 +44,14 @@ if [ "$WORKSPACE_UID" != "$CURRENT_UID" ] || [ "$WORKSPACE_GID" != "$CURRENT_GID
         EXISTING_USER=$(getent passwd "$WORKSPACE_UID" | cut -d: -f1 || true)
         if [ -z "$EXISTING_USER" ]; then
             usermod --uid "$WORKSPACE_UID" claude
+        else
+            # Refuse to continue silently — proceeding would leave workspace files
+            # owned by $WORKSPACE_UID while the process runs as $CURRENT_UID, so
+            # Claude Code can neither read nor write its own workspace.
+            echo "✗  Cannot remap 'claude' to uid $WORKSPACE_UID: already in use by '$EXISTING_USER'" >&2
+            echo "   The host uid collides with a pre-existing user in the image." >&2
+            echo "   Rebuild the image with a non-colliding base, or run the host process as a different uid." >&2
+            exit 1
         fi
     fi
 
