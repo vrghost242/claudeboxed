@@ -143,6 +143,10 @@ if [ -n "$GH_AUTH_TOKEN" ]; then
     export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_AUTH_TOKEN"
 fi
 
+# ── Update Claude Code to latest version ─────────────────────────────────────
+echo "⟳  Checking for Claude Code updates..."
+npm update -g @anthropic-ai/claude-code --loglevel=warn
+
 # ── Load ClaudeBoxed marketplace plugins ─────────────────────────────────────
 # Scan /opt/claude-market/plugins/ and pass each as --plugin-dir so they are
 # active for the session without modifying ~/.claude/plugins/ (which is shared
