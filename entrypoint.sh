@@ -152,8 +152,10 @@ if [ -n "$GH_AUTH_TOKEN" ]; then
 fi
 
 # ── Update Claude Code to latest version ─────────────────────────────────────
+# Non-fatal: a registry outage or transient network issue must not block startup.
 echo "⟳  Checking for Claude Code updates..."
-npm update -g @anthropic-ai/claude-code --loglevel=warn
+npm update -g @anthropic-ai/claude-code --loglevel=warn \
+    || echo "⚠  Update skipped — continuing with currently installed version"
 
 # ── Load ClaudeBoxed marketplace plugins ─────────────────────────────────────
 # Scan /opt/claude-market/plugins/ and pass each as --plugin-dir so they are
