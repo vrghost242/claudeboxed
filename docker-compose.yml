@@ -5,6 +5,15 @@
 #   docker compose run --rm claude                    # interactive session
 #   docker compose run --rm claude "Fix the tests"    # one-shot prompt
 #   docker compose run --rm claude-unsafe "Refactor"  # skip permission prompts
+#
+# Preconditions (bind mounts require the source path to exist on the host):
+#   mkdir -p ~/.claude ~/.config/gh
+#   touch ~/.claude.json
+#   # ~/.gitconfig and ~/.ssh: assumed present on a developer machine.
+#   # ~/.aws: only required if you uncomment the optional mount below.
+#
+# For a launcher that handles these preconditions automatically and guards
+# optional mounts, use ./claudeboxed instead.
 # ─────────────────────────────────────────────────────────────────────────────
 
 services:
@@ -63,11 +72,14 @@ services:
         target: /home/claude/.ssh
         read_only: true
 
-      # ── AWS credentials (read-only) ──────────────────────────────────────
-      - type: bind
-        source: ${HOME}/.aws
-        target: /home/claude/.aws
-        read_only: true
+      # ── AWS credentials (optional; uncomment if you use AWS) ─────────────
+      # Commented out by default because Compose has no conditional mount —
+      # including it unconditionally would break `docker compose run` on any
+      # host without ~/.aws. The claudeboxed launcher guards this automatically.
+      # - type: bind
+      #   source: ${HOME}/.aws
+      #   target: /home/claude/.aws
+      #   read_only: true
 
       # ── ClaudeBoxed marketplace (plugins loaded via --plugin-dir) ────────
       - type: bind
