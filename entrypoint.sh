@@ -149,6 +149,9 @@ fi
 # with the host).
 PLUGIN_ARGS=()
 if [ -d /opt/claude-market/plugins ]; then
+    # Ensure plugin scripts are executable (bind mounts on macOS may lose the execute bit)
+    find /opt/claude-market/plugins -name '*.sh' -exec chmod +x {} +
+
     for plugin_dir in /opt/claude-market/plugins/*/; do
         [ -d "$plugin_dir" ] && PLUGIN_ARGS+=(--plugin-dir "$plugin_dir")
     done
