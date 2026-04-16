@@ -82,8 +82,9 @@ if [[ -n "$WORKTREE_NAME" ]]; then
   WORKSPACE_DIR="$WORKTREE_DIR"
 fi
 
-# ── Guard: ~/.claude directory and ~/.claude.json must exist for mounts ───────
+# ── Guard: directories must exist before bind-mounting ────────────────────────
 mkdir -p "${HOME}/.claude"
+mkdir -p "${HOME}/.config/gh"
 touch "${HOME}/.claude.json"
 
 # ── Build image if requested or not yet present ───────────────────────────────
@@ -112,6 +113,12 @@ if [[ -f "${HOME}/.gitconfig" ]]; then
 elif [[ -f "${XDG_CONFIG_HOME:-${HOME}/.config}/git/config" ]]; then
   DOCKER_ARGS+=(-v "${XDG_CONFIG_HOME:-${HOME}/.config}/git/config:/home/claude/.gitconfig:ro")
 fi
+
+# Mount gh CLI config (read-write — OAuth tokens refresh)
+DOCKER_ARGS+=(-v "${HOME}/.config/gh:/home/claude/.config/gh")
+
+# Mount ClaudeBoxed marketplace (plugins loaded via --plugin-dir in entrypoint)
+DOCKER_ARGS+=(-v "${SCRIPT_DIR}/ClaudeBoxedMarket:/opt/claude-market")
 
 # Mount SSH keys read-only if they exist (for git over SSH)
 if [[ -d "${HOME}/.ssh" ]]; then

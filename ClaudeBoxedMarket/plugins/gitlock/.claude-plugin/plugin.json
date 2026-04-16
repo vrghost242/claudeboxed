@@ -1,0 +1,8 @@
+  {
+    "name": "gitlock",
+    "description": "Standardises git operations — blocks MCP writes, enforces git+gh CLI workflow",
+    "version": "1.0.0",
+    "author": {
+      "name": "Bengt Bjorkberg"
+    }
+  }

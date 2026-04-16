@@ -1,0 +1,13 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "claudeboxed",
+  "description": "Plugins bundled with ClaudeBoxed",
+  "owner": { "name": "Bengt Bjorkberg" },
+  "plugins": [
+    {
+      "name": "gitlock",
+      "description": "Standardises git operations — blocks MCP writes, enforces git+gh CLI workflow",
+      "source": "./plugins/gitlock"
+    }
+  ]
+}

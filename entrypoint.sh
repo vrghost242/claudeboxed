@@ -51,7 +51,7 @@ if [ "$WORKSPACE_UID" != "$CURRENT_UID" ] || [ "$WORKSPACE_GID" != "$CURRENT_GID
     # home. /home/claude/.cargo and .rustup contain thousands of files —
     # chown -R /home/claude on macOS/VirtioFS takes ~60s. Instead we target
     # only the dirs that are actually mounted from the host.
-    for dir in /home/claude/.claude /home/claude/.ssh; do
+    for dir in /home/claude/.claude /home/claude/.ssh /home/claude/.config/gh; do
         if [ -d "$dir" ]; then
             chown -R "$WORKSPACE_UID:$WORKSPACE_GID" "$dir" 2>/dev/null || true
         fi
@@ -97,13 +97,64 @@ if [ -S /var/run/docker.sock ]; then
     usermod -aG "$DOCKER_GROUP" claude
 fi
 
-# ── Configure git credentials from GH_TOKEN ─────────────────────────────────
-# ~/.gitconfig is bind-mounted read-only from the host, so we write a
-# system-level credential helper that feeds GH_TOKEN to git over HTTPS.
-if [ -n "$GH_TOKEN" ]; then
-    git config --system credential.helper \
-        '!f() { echo "username=x-access-token"; echo "password=${GH_TOKEN}"; }; f'
+# ── Configure GitHub authentication ──────────────────────────────────────────
+# Uses gh CLI as the single auth source for both git and GitHub API.
+# OAuth tokens persist in ~/.config/gh/ (mounted as a volume from the host).
+#
+# Priority:
+#   1. Existing gh OAuth session (from a previous container run)
+#   2. GH_TOKEN environment variable
+#   3. Interactive web login (OAuth device flow)
+
+mkdir -p /home/claude/.config/gh
+chown -R "$WORKSPACE_UID:$WORKSPACE_GID" /home/claude/.config 2>/dev/null || true
+
+if gosu claude gh auth status &>/dev/null; then
+    echo "✓  GitHub: authenticated"
+else
+    if [ -n "${GH_TOKEN:-}" ]; then
+        if echo "$GH_TOKEN" | gosu claude gh auth login --with-token 2>/dev/null; then
+            echo "✓  GitHub: authenticated via GH_TOKEN"
+        else
+            echo "✗  GitHub: GH_TOKEN is invalid or expired"
+        fi
+    fi
+
+    if ! gosu claude gh auth status &>/dev/null; then
+        echo ""
+        echo "→  GitHub: no valid credentials. Starting web login..."
+        echo "   (One-time setup — token persists across container restarts)"
+        echo ""
+        gosu claude gh auth login --web --git-protocol https || {
+            echo ""
+            echo "⚠  GitHub: auth skipped — git push/pull won't work for private repos"
+        }
+    fi
+fi
+
+# Use gh as git's credential helper. Set at system level because ~/.gitconfig
+# is bind-mounted read-only from the host.
+git config --system credential.helper '!gh auth git-credential'
+
+# Export the token so child processes inherit it (e.g. MCP GitHub server).
+GH_AUTH_TOKEN=$(gosu claude gh auth token 2>/dev/null || true)
+if [ -n "$GH_AUTH_TOKEN" ]; then
+    export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_AUTH_TOKEN"
+fi
+
+# ── Load ClaudeBoxed marketplace plugins ─────────────────────────────────────
+# Scan /opt/claude-market/plugins/ and pass each as --plugin-dir so they are
+# active for the session without modifying ~/.claude/plugins/ (which is shared
+# with the host).
+PLUGIN_ARGS=()
+if [ -d /opt/claude-market/plugins ]; then
+    for plugin_dir in /opt/claude-market/plugins/*/; do
+        [ -d "$plugin_dir" ] && PLUGIN_ARGS+=(--plugin-dir "$plugin_dir")
+    done
+    if [ ${#PLUGIN_ARGS[@]} -gt 0 ]; then
+        echo "✓  Marketplace: ${#PLUGIN_ARGS[@]} plugin(s) loaded from ClaudeBoxed"
+    fi
 fi
 
 # ── Drop privileges and exec Claude Code ─────────────────────────────────────
-exec gosu claude claude "$@"
+exec gosu claude claude "${PLUGIN_ARGS[@]}" "$@"
