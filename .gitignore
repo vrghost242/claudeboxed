@@ -3,6 +3,9 @@
 .env.*
 .mcp.json
 
+# ── Claude Code local state (personal settings + scheduled-task lock) ────────
+.claude/
+
 # ── Node.js ───────────────────────────────────────────────────────────────────
 node_modules/
 npm-debug.log*

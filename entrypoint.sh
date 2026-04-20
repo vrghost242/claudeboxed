@@ -5,29 +5,52 @@
 # Problem: Docker volume mounts use numeric uid/gid for ownership checks.
 #   - On Linux the host uid is typically 1000, but could be anything (e.g. 501
 #     on some distros, or a corporate AD uid in the thousands).
-#   - On macOS the default uid is 501. Docker Desktop uses VirtioFS which
-#     handles permissions differently, but the container user still needs to
-#     match for writes to work reliably.
+#   - On Docker Desktop for Mac, VirtioFS presents bind-mounted files as
+#     root-owned inside the container regardless of real host ownership.
 #
-# Solution: Run the container as root, detect the actual owner of the mounted
-# workspace, remap the internal 'claude' user to that uid/gid at startup, fix
-# ownership of the home directory, then drop to 'claude' and exec Claude Code.
+# Solution: Run the container as root. The launcher passes the real host uid
+# via HOST_UID (stat of /workspace is unreliable on VirtioFS). If the
+# resulting uid is non-zero, remap the 'claude' user to match it and drop to
+# 'claude' before exec. If the uid is 0 (VirtioFS or a genuinely root-owned
+# workspace), stay as root and rely on VirtioFS to translate file ownership
+# on the host side.
 #
 # This means the image never needs to be rebuilt for a different user.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
 # ── Detect the uid/gid of the mounted workspace ──────────────────────────────
-# Using /workspace rather than ~/.claude because it's always mounted and its
-# ownership reflects the actual host user.
-WORKSPACE_UID=$(stat -c '%u' /workspace 2>/dev/null || echo "1000")
-WORKSPACE_GID=$(stat -c '%g' /workspace 2>/dev/null || echo "1000")
+# Prefer explicit values from the launcher (HOST_UID/HOST_GID). Fall back to
+# stat'ing /workspace when invoked directly via `docker run`.
+#
+# Docker Desktop for Mac (VirtioFS) presents bind-mounted files as root-owned
+# inside the container regardless of real host ownership. The stat fallback
+# therefore returns 0 on that platform; the uid=0 branch below handles it by
+# running as root throughout (VirtioFS translates writes back to the real
+# host user on the host side).
+WORKSPACE_UID="${HOST_UID:-$(stat -c '%u' /workspace 2>/dev/null || echo "1000")}"
+WORKSPACE_GID="${HOST_GID:-$(stat -c '%g' /workspace 2>/dev/null || echo "1000")}"
 
 CURRENT_UID=$(id -u claude)
 CURRENT_GID=$(id -g claude)
 
-# ── Remap claude user if uid/gid don't match the workspace owner ─────────────
-if [ "$WORKSPACE_UID" != "$CURRENT_UID" ] || [ "$WORKSPACE_GID" != "$CURRENT_GID" ]; then
+# ── Decide: drop to 'claude' or stay as root ────────────────────────────────
+# When the workspace is root-owned (either genuinely or via VirtioFS
+# translation on Docker Desktop), dropping to an unprivileged user produces
+# silent permission failures on bind-mounted directories. Stay as root in
+# that case — all the mounts are then accessible, and VirtioFS rewrites file
+# ownership to the real host user on the host side.
+AS_CLAUDE=(gosu claude)
+if [ "$WORKSPACE_UID" = "0" ]; then
+    echo "ℹ  Workspace reports root ownership — running as root inside the container."
+    echo "   (Typical on Docker Desktop/VirtioFS; host file ownership is preserved.)"
+    AS_CLAUDE=()
+    # Children (gh, claude, npm) must use /home/claude for config, not /root.
+    export HOME=/home/claude
+fi
+
+# ── Remap claude user if we're going to drop to it ──────────────────────────
+if [ ${#AS_CLAUDE[@]} -gt 0 ] && { [ "$WORKSPACE_UID" != "$CURRENT_UID" ] || [ "$WORKSPACE_GID" != "$CURRENT_GID" ]; }; then
     # Remap the group first
     if [ "$WORKSPACE_GID" != "$CURRENT_GID" ]; then
         # If another group already owns this gid, reuse it; otherwise modify claude's
@@ -115,13 +138,17 @@ fi
 #   3. Interactive web login (OAuth device flow)
 
 mkdir -p /home/claude/.config/gh
-chown -R "$WORKSPACE_UID:$WORKSPACE_GID" /home/claude/.config 2>/dev/null || true
+# Only chown when we're actually dropping to the claude user. In root-mode
+# (uid=0 branch) the bind mount's ownership is handled by VirtioFS.
+if [ ${#AS_CLAUDE[@]} -gt 0 ]; then
+    chown -R "$WORKSPACE_UID:$WORKSPACE_GID" /home/claude/.config 2>/dev/null || true
+fi
 
-if gosu claude gh auth status &>/dev/null; then
+if "${AS_CLAUDE[@]}" gh auth status &>/dev/null; then
     echo "✓  GitHub: authenticated"
 else
     if [ -n "${GH_TOKEN:-}" ]; then
-        if echo "$GH_TOKEN" | gosu claude gh auth login --with-token 2>/dev/null; then
+        if echo "$GH_TOKEN" | "${AS_CLAUDE[@]}" gh auth login --with-token 2>/dev/null; then
             echo "✓  GitHub: authenticated via GH_TOKEN"
         else
             echo "✗  GitHub: GH_TOKEN is invalid or expired — clearing from environment"
@@ -129,12 +156,12 @@ else
         fi
     fi
 
-    if ! gosu claude gh auth status &>/dev/null; then
+    if ! "${AS_CLAUDE[@]}" gh auth status &>/dev/null; then
         echo ""
         echo "→  GitHub: no valid credentials. Starting web login..."
         echo "   (One-time setup — token persists across container restarts)"
         echo ""
-        gosu claude gh auth login --web --git-protocol https || {
+        "${AS_CLAUDE[@]}" gh auth login --web --git-protocol https || {
             echo ""
             echo "⚠  GitHub: auth skipped — git push/pull won't work for private repos"
         }
@@ -146,7 +173,7 @@ fi
 git config --system credential.helper '!gh auth git-credential'
 
 # Export the token so child processes inherit it (e.g. MCP GitHub server).
-GH_AUTH_TOKEN=$(gosu claude gh auth token 2>/dev/null || true)
+GH_AUTH_TOKEN=$("${AS_CLAUDE[@]}" gh auth token 2>/dev/null || true)
 if [ -n "$GH_AUTH_TOKEN" ]; then
     export GITHUB_PERSONAL_ACCESS_TOKEN="$GH_AUTH_TOKEN"
 fi
@@ -158,21 +185,27 @@ npm update -g @anthropic-ai/claude-code --loglevel=warn \
     || echo "⚠  Update skipped — continuing with currently installed version"
 
 # ── Load ClaudeBoxed marketplace plugins ─────────────────────────────────────
-# Scan /opt/claude-market/plugins/ and pass each as --plugin-dir so they are
-# active for the session without modifying ~/.claude/plugins/ (which is shared
-# with the host).
+# Only plugins named in CLAUDEBOXED_PLUGINS (space-separated) are loaded —
+# set by the launcher (default: gitlock; others opted in via --plugin).
+# Each selected plugin is passed as --plugin-dir, so no state is written to
+# ~/.claude/plugins (which is shared with the host).
 PLUGIN_ARGS=()
-if [ -d /opt/claude-market/plugins ]; then
+if [ -d /opt/claude-market/plugins ] && [ -n "${CLAUDEBOXED_PLUGINS:-}" ]; then
     # Ensure plugin scripts are executable (bind mounts on macOS may lose the execute bit)
     find /opt/claude-market/plugins -name '*.sh' -exec chmod +x {} +
 
-    for plugin_dir in /opt/claude-market/plugins/*/; do
-        [ -d "$plugin_dir" ] && PLUGIN_ARGS+=(--plugin-dir "$plugin_dir")
+    for plugin_name in ${CLAUDEBOXED_PLUGINS}; do
+        plugin_dir="/opt/claude-market/plugins/${plugin_name}"
+        if [ -d "$plugin_dir" ]; then
+            PLUGIN_ARGS+=(--plugin-dir "$plugin_dir")
+        else
+            echo "⚠  Plugin '${plugin_name}' not found at ${plugin_dir} — skipping"
+        fi
     done
     if [ ${#PLUGIN_ARGS[@]} -gt 0 ]; then
-        echo "✓  Marketplace: ${#PLUGIN_ARGS[@]} plugin(s) loaded from ClaudeBoxed"
+        echo "✓  Marketplace: ${#PLUGIN_ARGS[@]} plugin(s) loaded (${CLAUDEBOXED_PLUGINS})"
     fi
 fi
 
-# ── Drop privileges and exec Claude Code ─────────────────────────────────────
-exec gosu claude claude "${PLUGIN_ARGS[@]}" "$@"
+# ── Exec Claude Code (as 'claude' or as root, per AS_CLAUDE above) ───────────
+exec "${AS_CLAUDE[@]}" claude "${PLUGIN_ARGS[@]}" "$@"

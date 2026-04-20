@@ -6,7 +6,7 @@ Run [Claude Code](https://docs.claude.com/en/docs/claude-code/overview) in an is
 
 | File | Purpose |
 |---|---|
-| `Dockerfile` | Builds the image with Node 20, Python 3, Rust, Playwright, gh CLI, and language tooling |
+| `Dockerfile` | Builds the image with Node 22, Python 3, Rust, Playwright, gh CLI, and language tooling |
 | `docker-compose.yml` | Compose services for interactive and unsafe modes |
 | `claudeboxed` | Convenience shell script wrapping `docker run` |
 | `entrypoint.sh` | Runtime uid/gid remapping so volume permissions work cross-platform |
@@ -53,9 +53,18 @@ The script checks your environment (Docker, Claude auth, Git, GitHub, AWS, MCP) 
 
 # Run in a git worktree (isolated branch for parallel agents)
 ./claudeboxed --worktree content
+
+# Load an opt-in marketplace plugin (repeatable)
+./claudeboxed --plugin gsd
 ```
 
 The first run builds the Docker image automatically.
+
+### Marketplace plugins
+
+ClaudeBoxed ships a small plugin marketplace at `ClaudeBoxedMarket/`, bind-mounted into the container at `/opt/claude-market`. `gitlock` is loaded by default; others (e.g. `gsd` — [Get Shit Done](https://github.com/gsd-build/get-shit-done)) are opt-in via `--plugin <name>`, repeatable.
+
+Plugins live fully inside the container — nothing is written to `~/.claude/plugins/`, so host state is unaffected. To update the vendored copy of GSD, bump the tag in `ClaudeBoxedMarket/plugins/gsd/.vendor.sh` and re-run it.
 
 ### Running multiple agents in parallel
 

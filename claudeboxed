@@ -9,7 +9,13 @@
 #   ./claudeboxed --build                  Rebuild the image before starting
 #   ./claudeboxed --host-network            Force host network (Linux default, no-op on Mac)
 #   ./claudeboxed --worktree content       Run in a git worktree (isolated branch)
+#   ./claudeboxed --plugin gsd             Load an opt-in marketplace plugin (repeatable)
 #   ./claudeboxed --help                   Show this help
+#
+# Plugin loading:
+#   By default, only plugins listed in PLUGINS_DEFAULT below are active. Use
+#   --plugin <name> to enable additional ones (e.g. gsd). The flag can be
+#   passed multiple times. See ClaudeBoxedMarket/marketplace.json for the list.
 #
 # Prerequisites:
 #   - Docker running
@@ -25,6 +31,11 @@ HOST_NETWORK=false
 WORKTREE_NAME=""
 PROMPT_ARGS=()
 
+# Plugins loaded by default (space-separated). Other plugins from
+# ClaudeBoxedMarket are opt-in via --plugin <name>.
+PLUGINS_DEFAULT="gitlock"
+EXTRA_PLUGINS=()
+
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -37,6 +48,14 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       WORKTREE_NAME="$2"
+      shift 2
+      ;;
+    --plugin)
+      if [[ -z "${2:-}" || "$2" == --* ]]; then
+        echo "Error: --plugin requires a name (e.g. --plugin gsd)" >&2
+        exit 1
+      fi
+      EXTRA_PLUGINS+=("$2")
       shift 2
       ;;
     --help|-h)
@@ -130,10 +149,23 @@ if [[ -d "${HOME}/.aws" ]]; then
   DOCKER_ARGS+=(-v "${HOME}/.aws:/home/claude/.aws:ro")
 fi
 
+# Pass the real host uid/gid so the entrypoint doesn't have to stat /workspace.
+# On Docker Desktop / VirtioFS the stat result is 0 regardless of real
+# ownership, which would otherwise force root-mode inside the container.
+DOCKER_ARGS+=(-e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)")
+
 # Pass through environment variables for git and AWS access
 [[ -n "${GH_TOKEN:-}" ]]     && DOCKER_ARGS+=(-e "GH_TOKEN=${GH_TOKEN}")
 [[ -n "${AWS_REGION:-}" ]]   && DOCKER_ARGS+=(-e "AWS_REGION=${AWS_REGION}")
 [[ -n "${AWS_PROFILE:-}" ]]  && DOCKER_ARGS+=(-e "AWS_PROFILE=${AWS_PROFILE}")
+
+# Active plugin allowlist — the entrypoint uses this to pick which plugin dirs
+# to pass to `claude --plugin-dir`. Default set + any --plugin flags.
+CLAUDEBOXED_PLUGINS="$PLUGINS_DEFAULT"
+if [[ ${#EXTRA_PLUGINS[@]} -gt 0 ]]; then
+  CLAUDEBOXED_PLUGINS="$CLAUDEBOXED_PLUGINS ${EXTRA_PLUGINS[*]}"
+fi
+DOCKER_ARGS+=(-e "CLAUDEBOXED_PLUGINS=${CLAUDEBOXED_PLUGINS}")
 
 # Mount Docker socket so Claude can build/run sibling containers
 if [[ -S /var/run/docker.sock ]]; then
@@ -188,6 +220,7 @@ fi
 
 echo "🚀  Launching Claude Code in Docker..."
 echo "    Workspace: ${WORKSPACE_DIR}"
+echo "    Plugins:   ${CLAUDEBOXED_PLUGINS}"
 if [[ -n "$WORKTREE_NAME" ]]; then
   echo "    Worktree:  ${WORKTREE_NAME} (branch: ${WORKTREE_BRANCH})"
 fi
