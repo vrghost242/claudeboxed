@@ -1,7 +1,7 @@
 {
   "name": "gsd",
   "description": "Get Shit Done — meta-prompting, context engineering, and spec-driven development system by TÂCHES. Vendored from gsd-build/get-shit-done.",
-  "version": "1.38.1",
+  "version": "1.41.0",
   "author": {
     "name": "TÂCHES",
     "url": "https://github.com/gsd-build/get-shit-done"

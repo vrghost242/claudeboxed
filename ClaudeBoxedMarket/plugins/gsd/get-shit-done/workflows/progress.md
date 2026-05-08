@@ -89,6 +89,11 @@ Use this instead of manually reading/parsing ROADMAP.md.
   </step>
 
 <step name="report">
+> ⚠️ Context authority: PROJECT.md, STATE.md, and ROADMAP.md are the authoritative sources
+> for project name, milestone, current phase, and next-step routing. CLAUDE.md ## Project
+> blocks are a secondary config aid that may be significantly stale — do NOT use the
+> CLAUDE.md project description as a source for any progress report field.
+
 **Generate progress bar from `gsd-sdk query progress` / `progress.json`, then present rich status report:**
 
 ```bash
@@ -123,7 +128,7 @@ CONTEXT: [✓ if has_context | - if not]
 - [e.g. jq -r '.blockers[].text' from state-snapshot]
 
 ## Pending Todos
-- [count] pending — /gsd-check-todos to review
+- [count] pending — /gsd-capture --list to review
 
 ## Active Debug Sessions
 - [count] active — /gsd-debug to continue
@@ -133,6 +138,31 @@ CONTEXT: [✓ if has_context | - if not]
 [Next phase/plan objective from roadmap analyze]
 ```
 
+</step>
+
+<step name="mvp_display">
+**MVP-mode display (when phase has `**Mode:** mvp` in ROADMAP.md).**
+
+Resolve `MVP_MODE` per phase via the centralized resolver. progress has no `--mvp` CLI flag (mode is inherited from the planned phase), so we omit `--cli-flag`:
+
+```bash
+MVP_MODE=$(gsd-sdk query phase.mvp-mode "${PHASE_NUMBER}" --pick active)
+```
+
+When `MVP_MODE=true`, the per-phase progress block adds a **user-flow status** sub-block sourced from the phase's PLAN.md task names. Each task whose name reads like a user-visible capability (e.g., "Register flow", "Login flow", "Password reset") is rendered as a status line:
+
+```
+Phase 1 — User Auth MVP
+  ✅ Walking Skeleton complete           ← from SKELETON.md existence
+  ✅ Register flow working               ← from PLAN.md task with summary
+  ✅ Login flow working                  ← from PLAN.md task with summary
+  🔄 Password reset (in progress)        ← from PLAN.md task without summary
+  ⬜ Email verification                  ← from PLAN.md task not yet started
+```
+
+**User-flow filter:** Tasks whose names are technical-sounding ("Wire DB schema", "Create migration", "Bump deps") are NOT rendered as user-flow status lines. Heuristic: a task name is user-flow-shaped if it ends in "flow", "page", "screen", or starts with a verb the user would recognize ("Register", "Login", "Upload", "View"). Tasks that fail the heuristic still count toward the standard task progress total but don't appear in the user-flow sub-block.
+
+When `MVP_MODE=false` (mode is null, absent, or the phase has no `**Mode:**` line), fall back to the standard display path — no behavioral change.
 </step>
 
 <step name="route">
@@ -270,7 +300,7 @@ PHASE_HAS_UI=$(echo "$PHASE_SECTION" | grep -qi "UI hint.*yes" && echo "true" ||
 **Also available:**
 - `/gsd-ui-phase {phase}` — generate UI design contract (recommended for frontend phases)
 - `/gsd-plan-phase {phase}` — skip discussion, plan directly
-- `/gsd-list-phase-assumptions {phase}` — see Claude's assumptions
+- `/gsd-discuss-phase {phase}` — include assumptions check before planning
 
 ---
 ```
@@ -292,7 +322,7 @@ PHASE_HAS_UI=$(echo "$PHASE_SECTION" | grep -qi "UI hint.*yes" && echo "true" ||
 
 **Also available:**
 - `/gsd-plan-phase {phase} ${GSD_WS}` — skip discussion, plan directly
-- `/gsd-list-phase-assumptions {phase} ${GSD_WS}` — see Claude's assumptions
+- `/gsd-discuss-phase {phase} ${GSD_WS}` — include assumptions check before planning
 
 ---
 ```

@@ -1,14 +1,14 @@
 ---
 name: gsd:code-review
 description: Review source files changed during a phase for bugs, security issues, and code quality problems
-argument-hint: "<phase-number> [--depth=quick|standard|deep] [--files file1,file2,...]"
+argument-hint: "<phase-number> [--depth=quick|standard|deep] [--files file1,file2,...] [--fix [--all] [--auto]]"
 allowed-tools:
   - Read
   - Bash
   - Glob
   - Grep
   - Write
-  - Task
+  - Agent
 ---
 <objective>
 Review source files changed during a phase for bugs, security vulnerabilities, and code quality problems.
@@ -22,6 +22,9 @@ Arguments:
   - standard: Per-file analysis with language-specific checks (~5-15 min, default)
   - deep: Cross-file analysis including import graphs and call chains (~15-30 min)
 - `--files file1,file2,...` (optional) — explicit comma-separated file list, skips SUMMARY/git scoping (highest precedence for scoping)
+- `--fix` (optional) — after review completes (or if REVIEW.md already exists), auto-apply fixes found. Spawns gsd-code-fixer agent. Accepts sub-flags:
+  - `--all` — include Info findings in fix scope (default: Critical + Warning only)
+  - `--auto` — enable fix + re-review iteration loop, capped at 3 iterations
 
 Output: {padded_phase}-REVIEW.md in phase directory + inline summary of findings
 </objective>
@@ -43,7 +46,7 @@ Context files (CLAUDE.md, SUMMARY.md, phase state) are resolved inside the workf
 <process>
 This command is a thin dispatch layer. It parses arguments and delegates to the workflow.
 
-Execute the code-review workflow from @/opt/claude-market/plugins/gsd/get-shit-done/workflows/code-review.md end-to-end.
+Execute end-to-end.
 
 The workflow (not this command) enforces these gates:
 - Phase validation (before config gate)

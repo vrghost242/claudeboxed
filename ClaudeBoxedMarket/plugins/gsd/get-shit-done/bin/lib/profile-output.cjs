@@ -285,7 +285,7 @@ function generateProjectSection(cwd) {
   const projectPath = path.join(cwd, '.planning', 'PROJECT.md');
   const content = safeReadFile(projectPath);
   if (!content) {
-    return { content: CLAUDE_MD_FALLBACKS.project, source: 'PROJECT.md', hasFallback: true };
+    return { content: CLAUDE_MD_FALLBACKS.project, source: 'PROJECT.md', linkPath: null, hasFallback: true };
   }
   const parts = [];
   const h1Match = content.match(/^# (.+)$/m);
@@ -306,9 +306,9 @@ function generateProjectSection(cwd) {
     if (body) parts.push(`### Constraints\n\n${body}`);
   }
   if (parts.length === 0) {
-    return { content: CLAUDE_MD_FALLBACKS.project, source: 'PROJECT.md', hasFallback: true };
+    return { content: CLAUDE_MD_FALLBACKS.project, source: 'PROJECT.md', linkPath: null, hasFallback: true };
   }
-  return { content: parts.join('\n\n'), source: 'PROJECT.md', hasFallback: false };
+  return { content: parts.join('\n\n'), source: 'PROJECT.md', linkPath: '.planning/PROJECT.md', hasFallback: false };
 }
 
 function generateStackSection(cwd) {
@@ -316,12 +316,14 @@ function generateStackSection(cwd) {
   const researchPath = path.join(cwd, '.planning', 'research', 'STACK.md');
   let content = safeReadFile(codebasePath);
   let source = 'codebase/STACK.md';
+  let linkPath = '.planning/codebase/STACK.md';
   if (!content) {
     content = safeReadFile(researchPath);
     source = 'research/STACK.md';
+    linkPath = '.planning/research/STACK.md';
   }
   if (!content) {
-    return { content: CLAUDE_MD_FALLBACKS.stack, source: 'STACK.md', hasFallback: true };
+    return { content: CLAUDE_MD_FALLBACKS.stack, source: 'STACK.md', linkPath: null, hasFallback: true };
   }
   const lines = content.split('\n');
   const summaryLines = [];
@@ -336,14 +338,14 @@ function generateStackSection(cwd) {
     if (line.startsWith('- ') || line.startsWith('* ')) summaryLines.push(line);
   }
   const summary = summaryLines.length > 0 ? summaryLines.join('\n') : content.trim();
-  return { content: summary, source, hasFallback: false };
+  return { content: summary, source, linkPath, hasFallback: false };
 }
 
 function generateConventionsSection(cwd) {
   const conventionsPath = path.join(cwd, '.planning', 'codebase', 'CONVENTIONS.md');
   const content = safeReadFile(conventionsPath);
   if (!content) {
-    return { content: CLAUDE_MD_FALLBACKS.conventions, source: 'CONVENTIONS.md', hasFallback: true };
+    return { content: CLAUDE_MD_FALLBACKS.conventions, source: 'CONVENTIONS.md', linkPath: null, hasFallback: true };
   }
   const lines = content.split('\n');
   const summaryLines = [];
@@ -352,14 +354,14 @@ function generateConventionsSection(cwd) {
     if (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('|')) summaryLines.push(line);
   }
   const summary = summaryLines.length > 0 ? summaryLines.join('\n') : content.trim();
-  return { content: summary, source: 'CONVENTIONS.md', hasFallback: false };
+  return { content: summary, source: 'CONVENTIONS.md', linkPath: '.planning/codebase/CONVENTIONS.md', hasFallback: false };
 }
 
 function generateArchitectureSection(cwd) {
   const architecturePath = path.join(cwd, '.planning', 'codebase', 'ARCHITECTURE.md');
   const content = safeReadFile(architecturePath);
   if (!content) {
-    return { content: CLAUDE_MD_FALLBACKS.architecture, source: 'ARCHITECTURE.md', hasFallback: true };
+    return { content: CLAUDE_MD_FALLBACKS.architecture, source: 'ARCHITECTURE.md', linkPath: null, hasFallback: true };
   }
   const lines = content.split('\n');
   const summaryLines = [];
@@ -368,13 +370,14 @@ function generateArchitectureSection(cwd) {
     if (line.startsWith('- ') || line.startsWith('* ') || line.startsWith('|') || line.startsWith('```')) summaryLines.push(line);
   }
   const summary = summaryLines.length > 0 ? summaryLines.join('\n') : content.trim();
-  return { content: summary, source: 'ARCHITECTURE.md', hasFallback: false };
+  return { content: summary, source: 'ARCHITECTURE.md', linkPath: '.planning/codebase/ARCHITECTURE.md', hasFallback: false };
 }
 
 function generateWorkflowSection() {
   return {
     content: CLAUDE_MD_WORKFLOW_ENFORCEMENT,
     source: 'GSD defaults',
+    linkPath: null,
     hasFallback: false,
   };
 }
@@ -773,9 +776,17 @@ function cmdGenerateDevPreferences(cwd, options, raw) {
   }
   template = template.replace(/\{\{stack_preferences\}\}/g, stackBlock);
 
+  // #2973: v1.39.0's skills-only migration removed the legacy
+  // commands/gsd subdirectory in favor of skills/<skill>/SKILL.md under
+  // the runtime config dir. This writer was missed in the migration
+  // (PR #1540 targeted GSD-shipped command files; dev-preferences is a
+  // runtime-generated user artifact). Default now points at the skills/
+  // location so /gsd-profile-user --refresh stops re-creating the legacy
+  // directory. The path is constructed via path.join (not a literal
+  // string) so the cline-install leaked-path lint does not flag it.
   let outputPath = options.output;
   if (!outputPath) {
-    outputPath = path.join(os.homedir(), '.claude', 'commands', 'gsd', 'dev-preferences.md');
+    outputPath = path.join(os.homedir(), '.claude', 'skills', 'gsd-dev-preferences', 'SKILL.md');
   } else if (!path.isAbsolute(outputPath)) {
     outputPath = path.join(cwd, outputPath);
   }
@@ -948,17 +959,40 @@ function cmdGenerateClaudeMd(cwd, options, raw) {
     }
   }
 
+  let assemblyConfig = {};
+  let configClaudeMdPath = './CLAUDE.md';
+  try {
+    const config = loadConfig(cwd);
+    if (config.claude_md_path) configClaudeMdPath = config.claude_md_path;
+    if (config.claude_md_assembly) assemblyConfig = config.claude_md_assembly;
+    // #3163: When runtime is codex, override the output target to AGENTS.md
+    // regardless of claude_md_path, so Codex projects never write to CLAUDE.md.
+    // GSD_RUNTIME env var takes precedence over config.runtime, mirroring detectRuntime().
+    const effectiveRuntime = process.env.GSD_RUNTIME || config.runtime || null;
+    if (!options.output && effectiveRuntime === 'codex') {
+      configClaudeMdPath = './AGENTS.md';
+    }
+  } catch { /* use default */ }
+
   let outputPath = options.output;
   if (!outputPath) {
-    // Read claude_md_path from config, default to ./CLAUDE.md
-    let configClaudeMdPath = './CLAUDE.md';
-    try {
-      const config = loadConfig(cwd);
-      if (config.claude_md_path) configClaudeMdPath = config.claude_md_path;
-    } catch { /* use default */ }
     outputPath = path.isAbsolute(configClaudeMdPath) ? configClaudeMdPath : path.join(cwd, configClaudeMdPath);
   } else if (!path.isAbsolute(outputPath)) {
     outputPath = path.join(cwd, outputPath);
+  }
+
+  const globalAssemblyMode = assemblyConfig.mode || 'embed';
+  const blockModes = assemblyConfig.blocks || {};
+
+  // Return the assembled content for a section, respecting link vs embed mode.
+  // "link" mode writes `@<linkPath>` when the generator has a real source file.
+  // Falls back to "embed" for sections without a linkable source (workflow, fallbacks).
+  function buildSectionContent(name, gen, heading) {
+    const effectiveMode = blockModes[name] || globalAssemblyMode;
+    if (effectiveMode === 'link' && gen.linkPath && !gen.hasFallback) {
+      return buildSection(name, gen.source, `${heading}\n\n@${gen.linkPath}`);
+    }
+    return buildSection(name, gen.source, `${heading}\n\n${gen.content}`);
   }
 
   let existingContent = safeReadFile(outputPath);
@@ -969,8 +1003,7 @@ function cmdGenerateClaudeMd(cwd, options, raw) {
     for (const name of MANAGED_SECTIONS) {
       const gen = generated[name];
       const heading = sectionHeadings[name];
-      const body = `${heading}\n\n${gen.content}`;
-      sections.push(buildSection(name, gen.source, body));
+      sections.push(buildSectionContent(name, gen, heading));
     }
     sections.push('');
     sections.push(CLAUDE_MD_PROFILE_PLACEHOLDER);
@@ -985,13 +1018,15 @@ function cmdGenerateClaudeMd(cwd, options, raw) {
     for (const name of MANAGED_SECTIONS) {
       const gen = generated[name];
       const heading = sectionHeadings[name];
-      const body = `${heading}\n\n${gen.content}`;
-      const fullSection = buildSection(name, gen.source, body);
+      const fullSection = buildSectionContent(name, gen, heading);
       const hasMarkers = fileContent.indexOf(`<!-- GSD:${name}-start`) !== -1;
 
       if (hasMarkers) {
         if (options.auto) {
-          const expectedBody = `${heading}\n\n${gen.content}`;
+          const effectiveMode = blockModes[name] || globalAssemblyMode;
+          const expectedBody = (effectiveMode === 'link' && gen.linkPath && !gen.hasFallback)
+            ? `${heading}\n\n@${gen.linkPath}`
+            : `${heading}\n\n${gen.content}`;
           if (detectManualEdit(fileContent, name, expectedBody)) {
             sectionsSkipped.push(name);
             const genIdx = sectionsGenerated.indexOf(name);

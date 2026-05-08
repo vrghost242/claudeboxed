@@ -4,70 +4,15 @@
 
 const fs = require('fs');
 const path = require('path');
-const { output, error, planningDir, withPlanningLock, CONFIG_DEFAULTS, atomicWriteFileSync } = require('./core.cjs');
+const { output, error, ERROR_REASON, CONFIG_DEFAULTS, atomicWriteFileSync } = require('./core.cjs');
+const { planningDir, withPlanningLock } = require('./planning-workspace.cjs');
 const {
   VALID_PROFILES,
   getAgentToModelMapForProfile,
   formatAgentToModelMapAsTable,
 } = require('./model-profiles.cjs');
-
-const VALID_CONFIG_KEYS = new Set([
-  'mode', 'granularity', 'parallelization', 'commit_docs', 'model_profile',
-  'search_gitignored', 'brave_search', 'firecrawl', 'exa_search',
-  'workflow.research', 'workflow.plan_check', 'workflow.verifier',
-  'workflow.nyquist_validation', 'workflow.ai_integration_phase', 'workflow.ui_phase', 'workflow.ui_safety_gate',
-  'workflow.auto_advance', 'workflow.node_repair', 'workflow.node_repair_budget',
-  'workflow.tdd_mode',
-  'workflow.text_mode',
-  'workflow.research_before_questions',
-  'workflow.discuss_mode',
-  'workflow.skip_discuss',
-  'workflow.auto_prune_state',
-  'workflow._auto_chain_active',
-  'workflow.use_worktrees',
-  'workflow.code_review',
-  'workflow.code_review_depth',
-  'workflow.code_review_command',
-  'workflow.pattern_mapper',
-  'workflow.plan_bounce',
-  'workflow.plan_bounce_script',
-  'workflow.plan_bounce_passes',
-  'git.branching_strategy', 'git.base_branch', 'git.phase_branch_template', 'git.milestone_branch_template', 'git.quick_branch_template',
-  'planning.commit_docs', 'planning.search_gitignored',
-  'workflow.cross_ai_execution', 'workflow.cross_ai_command', 'workflow.cross_ai_timeout',
-  'workflow.subagent_timeout',
-  'workflow.inline_plan_threshold',
-  'hooks.context_warnings',
-  'features.thinking_partner',
-  'context',
-  'features.global_learnings',
-  'learnings.max_inject',
-  'project_code', 'phase_naming',
-  'manager.flags.discuss', 'manager.flags.plan', 'manager.flags.execute',
-  'response_language',
-  'intel.enabled',
-  'graphify.enabled',
-  'graphify.build_timeout',
-  'claude_md_path',
-]);
-
-/**
- * Check whether a config key path is valid.
- * Supports exact matches from VALID_CONFIG_KEYS plus dynamic patterns
- * like `agent_skills.<agent-type>` where the sub-key is freeform.
- */
-function isValidConfigKey(keyPath) {
-  if (VALID_CONFIG_KEYS.has(keyPath)) return true;
-  // Allow agent_skills.<agent-type> with any agent type string
-  if (/^agent_skills\.[a-zA-Z0-9_-]+$/.test(keyPath)) return true;
-  // Allow review.models.<cli-name> for per-CLI model selection in /gsd-review
-  if (/^review\.models\.[a-zA-Z0-9_-]+$/.test(keyPath)) return true;
-  // Allow features.<feature_name> — dynamic namespace for feature flags.
-  // Intentionally open-ended so new flags (e.g., features.global_learnings) work
-  // without updating VALID_CONFIG_KEYS each time.
-  if (/^features\.[a-zA-Z0-9_]+$/.test(keyPath)) return true;
-  return false;
-}
+const { VALID_CONFIG_KEYS, isValidConfigKey } = require('./config-schema.cjs');
+const { isSecretKey, maskSecret } = require('./secrets.cjs');
 
 const CONFIG_KEY_SUGGESTIONS = {
   'workflow.nyquist_validation_enabled': 'workflow.nyquist_validation',
@@ -81,12 +26,14 @@ const CONFIG_KEY_SUGGESTIONS = {
   'workflow.code_review_level': 'workflow.code_review_depth',
   'workflow.review_depth': 'workflow.code_review_depth',
   'review.model': 'review.models.<cli-name>',
+  'sub_repos': 'planning.sub_repos',
+  'plan_checker': 'workflow.plan_check',
 };
 
 function validateKnownConfigKeyPath(keyPath) {
   const suggested = CONFIG_KEY_SUGGESTIONS[keyPath];
   if (suggested) {
-    error(`Unknown config key: ${keyPath}. Did you mean ${suggested}?`);
+    error(`Unknown config key: ${keyPath}. Did you mean ${suggested}?`, ERROR_REASON.CONFIG_INVALID_KEY);
   }
 }
 
@@ -174,6 +121,10 @@ function buildNewProjectConfig(userChoices) {
       plan_bounce_script: null,
       plan_bounce_passes: 2,
       auto_prune_state: false,
+      post_planning_gaps: CONFIG_DEFAULTS.post_planning_gaps,
+      security_enforcement: CONFIG_DEFAULTS.security_enforcement,
+      security_asvs_level: CONFIG_DEFAULTS.security_asvs_level,
+      security_block_on: CONFIG_DEFAULTS.security_block_on,
     },
     hooks: {
       context_warnings: true,
@@ -327,7 +278,7 @@ function setConfigValue(cwd, keyPath, parsedValue) {
         config = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
       }
     } catch (err) {
-      error('Failed to read config.json: ' + err.message);
+      error('Failed to read config.json: ' + err.message, ERROR_REASON.CONFIG_PARSE_FAILED);
     }
 
     // Set nested value using dot notation (e.g., "workflow.research")
@@ -368,7 +319,7 @@ function cmdConfigSet(cwd, keyPath, value, raw) {
   validateKnownConfigKeyPath(keyPath);
 
   if (!isValidConfigKey(keyPath)) {
-    error(`Unknown config key: "${keyPath}". Valid keys: ${[...VALID_CONFIG_KEYS].sort().join(', ')}, agent_skills.<agent-type>, features.<feature_name>`);
+    error(`Unknown config key: "${keyPath}". Valid keys: ${[...VALID_CONFIG_KEYS].sort().join(', ')}, agent_skills.<agent-type>, features.<feature_name>`, ERROR_REASON.CONFIG_INVALID_KEY);
   }
 
   // Parse value (handle booleans, numbers, and JSON arrays/objects)
@@ -385,9 +336,55 @@ function cmdConfigSet(cwd, keyPath, value, raw) {
     error(`Invalid context value '${value}'. Valid values: ${VALID_CONTEXT_VALUES.join(', ')}`);
   }
 
+  // Codebase drift detector (#2003)
+  const VALID_DRIFT_ACTIONS = ['warn', 'auto-remap'];
+  if (keyPath === 'workflow.drift_action' && !VALID_DRIFT_ACTIONS.includes(String(parsedValue))) {
+    error(`Invalid workflow.drift_action '${value}'. Valid values: ${VALID_DRIFT_ACTIONS.join(', ')}`);
+  }
+  if (keyPath === 'workflow.drift_threshold') {
+    if (typeof parsedValue !== 'number' || !Number.isInteger(parsedValue) || parsedValue < 1) {
+      error(`Invalid workflow.drift_threshold '${value}'. Must be a positive integer.`);
+    }
+  }
+
+  // Post-planning gap checker (#2493)
+  if (keyPath === 'workflow.post_planning_gaps') {
+    if (typeof parsedValue !== 'boolean') {
+      error(`Invalid workflow.post_planning_gaps '${value}'. Must be a boolean (true or false).`);
+    }
+  }
+
   const setConfigValueResult = setConfigValue(cwd, keyPath, parsedValue);
+
+  // Mask secrets in both JSON and text output. The plaintext is written
+  // to config.json (that's where secrets live on disk); the CLI output
+  // must never echo it. See lib/secrets.cjs.
+  if (isSecretKey(keyPath)) {
+    const masked = maskSecret(parsedValue);
+    const maskedPrev = setConfigValueResult.previousValue === undefined
+      ? undefined
+      : maskSecret(setConfigValueResult.previousValue);
+    const maskedResult = {
+      ...setConfigValueResult,
+      value: masked,
+      previousValue: maskedPrev,
+      masked: true,
+    };
+    output(maskedResult, raw, `${keyPath}=${masked}`);
+    return;
+  }
+
   output(setConfigValueResult, raw, `${keyPath}=${parsedValue}`);
 }
+
+/**
+ * Schema-level defaults for well-known config keys.
+ * When a key is absent from config.json and no --default flag was supplied,
+ * cmdConfigGet checks here before emitting "Key not found".
+ */
+const SCHEMA_DEFAULTS = {
+  'context_window': 200000,
+};
 
 function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
   const configPath = path.join(planningDir(cwd), 'config.json');
@@ -405,11 +402,11 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
       output(defaultValue, raw, String(defaultValue));
       return;
     } else {
-      error('No config.json found at ' + configPath);
+      error('No config.json found at ' + configPath, ERROR_REASON.CONFIG_NO_FILE);
     }
   } catch (err) {
     if (err.message.startsWith('No config.json')) throw err;
-    error('Failed to read config.json: ' + err.message);
+    error('Failed to read config.json: ' + err.message, ERROR_REASON.CONFIG_PARSE_FAILED);
   }
 
   // Traverse dot-notation path (e.g., "workflow.auto_advance")
@@ -418,14 +415,32 @@ function cmdConfigGet(cwd, keyPath, raw, defaultValue) {
   for (const key of keys) {
     if (current === undefined || current === null || typeof current !== 'object') {
       if (hasDefault) { output(defaultValue, raw, String(defaultValue)); return; }
-      error(`Key not found: ${keyPath}`);
+      if (Object.prototype.hasOwnProperty.call(SCHEMA_DEFAULTS, keyPath)) {
+        const def = SCHEMA_DEFAULTS[keyPath];
+        output(def, raw, String(def));
+        return;
+      }
+      error(`Key not found: ${keyPath}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
     }
     current = current[key];
   }
 
   if (current === undefined) {
     if (hasDefault) { output(defaultValue, raw, String(defaultValue)); return; }
-    error(`Key not found: ${keyPath}`);
+    if (Object.prototype.hasOwnProperty.call(SCHEMA_DEFAULTS, keyPath)) {
+      const def = SCHEMA_DEFAULTS[keyPath];
+      output(def, raw, String(def));
+      return;
+    }
+    error(`Key not found: ${keyPath}`, ERROR_REASON.CONFIG_KEY_NOT_FOUND);
+  }
+
+  // Never echo plaintext for sensitive keys via config-get. Plaintext lives
+  // in config.json on disk; the CLI surface always shows the masked form.
+  if (isSecretKey(keyPath)) {
+    const masked = maskSecret(current);
+    output(masked, raw, masked);
+    return;
   }
 
   output(current, raw, String(current));

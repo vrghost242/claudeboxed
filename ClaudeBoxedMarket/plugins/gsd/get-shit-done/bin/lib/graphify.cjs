@@ -3,7 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const childProcess = require('child_process');
-const { atomicWriteFileSync } = require('./core.cjs');
+const { atomicWriteFileSync, execGit } = require('./core.cjs');
 
 // ─── Config Gate ─────────────────────────────────────────────────────────────
 
@@ -45,6 +45,17 @@ function disabledResponse() {
  * @param {{ timeout?: number }} [options={}] - Options (timeout in ms, default 30000)
  * @returns {{ exitCode: number, stdout: string, stderr: string }}
  */
+/**
+ * Frozen enum of typed reason codes for execGraphify failures (#2974).
+ * Tests assert on result.reason instead of grepping stderr text.
+ */
+const GRAPHIFY_REASON = Object.freeze({
+  OK: 'ok',
+  ENOENT: 'graphify_not_found',
+  TIMEOUT: 'graphify_timed_out',
+  EXIT_NONZERO: 'graphify_exit_nonzero',
+});
+
 function execGraphify(cwd, args, options = {}) {
   const timeout = options.timeout ?? 30000;
   const result = childProcess.spawnSync('graphify', args, {
@@ -57,7 +68,12 @@ function execGraphify(cwd, args, options = {}) {
 
   // ENOENT -- graphify binary not found on PATH
   if (result.error && result.error.code === 'ENOENT') {
-    return { exitCode: 127, stdout: '', stderr: 'graphify not found on PATH' };
+    return {
+      exitCode: 127,
+      stdout: '',
+      stderr: 'graphify not found on PATH',
+      reason: GRAPHIFY_REASON.ENOENT,
+    };
   }
 
   // Timeout -- subprocess killed via SIGTERM
@@ -66,13 +82,17 @@ function execGraphify(cwd, args, options = {}) {
       exitCode: 124,
       stdout: (result.stdout ?? '').toString().trim(),
       stderr: 'graphify timed out after ' + timeout + 'ms',
+      reason: GRAPHIFY_REASON.TIMEOUT,
+      timeout_ms: timeout,
     };
   }
 
+  const exitCode = result.status ?? 1;
   return {
-    exitCode: result.status ?? 1,
+    exitCode,
     stdout: (result.stdout ?? '').toString().trim(),
     stderr: (result.stderr ?? '').toString().trim(),
+    reason: exitCode === 0 ? GRAPHIFY_REASON.OK : GRAPHIFY_REASON.EXIT_NONZERO,
   };
 }
 
@@ -102,26 +122,55 @@ function checkGraphifyInstalled() {
 }
 
 /**
- * Detect graphify version via python3 importlib.metadata and check compatibility.
+ * Detect graphify version and check compatibility.
  * Tested range: >=0.4.0,<1.0
+ *
+ * Detection strategy:
+ * 1. Try `graphify --version` (works for most CLI installations, incl. venv installs)
+ * 2. Fall back to python3 importlib.metadata (legacy / system Python path)
+ * 3. Return null version gracefully if both fail
  *
  * @returns {{ version: string|null, compatible: boolean|null, warning: string|null }}
  */
 function checkGraphifyVersion() {
-  const result = childProcess.spawnSync('python3', [
-    '-c',
-    'from importlib.metadata import version; print(version("graphifyy"))',
-  ], {
+  // Strategy 1: try `graphify --version` directly (2s timeout -- fast path)
+  const versionResult = childProcess.spawnSync('graphify', ['--version'], {
     stdio: 'pipe',
     encoding: 'utf-8',
-    timeout: 5000,
+    timeout: 2000,
   });
 
-  if (result.status !== 0 || !result.stdout || !result.stdout.trim()) {
+  let versionStr = null;
+
+  if (!versionResult.error && versionResult.status === 0) {
+    const raw = (versionResult.stdout || '').trim();
+    // graphify --version may emit "graphify 0.4.23" or just "0.4.23"
+    const match = raw.match(/(\d+\.\d+(?:\.\d+)*)/);
+    if (match) {
+      versionStr = match[1];
+    }
+  }
+
+  // Strategy 2: fall back to python3 importlib.metadata
+  if (!versionStr) {
+    const pyResult = childProcess.spawnSync('python3', [
+      '-c',
+      'from importlib.metadata import version; print(version("graphifyy"))',
+    ], {
+      stdio: 'pipe',
+      encoding: 'utf-8',
+      timeout: 5000,
+    });
+
+    if (!pyResult.error && pyResult.status === 0 && pyResult.stdout && pyResult.stdout.trim()) {
+      versionStr = pyResult.stdout.trim();
+    }
+  }
+
+  if (!versionStr) {
     return { version: null, compatible: null, warning: 'Could not determine graphify version' };
   }
 
-  const versionStr = result.stdout.trim();
   const parts = versionStr.split('.').map(Number);
 
   if (parts.length < 2 || parts.some(isNaN)) {
@@ -310,7 +359,42 @@ function graphifyQuery(cwd, term, options = {}) {
 }
 
 /**
+ * Strict 4-40 hex fence for graph.built_at_commit values (#3170). Anything
+ * else (dashed, prose, empty) is treated as absent so a hostile graph.json
+ * cannot smuggle a `--upload-pack=…` option into a `git` argv.
+ */
+const COMMIT_HASH_RE = /^[0-9a-f]{4,40}$/i;
+
+/**
+ * Read git HEAD for the project at `cwd`. Returns the full commit hash on
+ * success, or null when cwd is not a git repo / `git` is not on PATH.
+ */
+function readGitHead(cwd) {
+  const r = execGit(cwd, ['rev-parse', 'HEAD']);
+  if (r.exitCode !== 0) return null;
+  return r.stdout.trim() || null;
+}
+
+/**
+ * Count commits between `from` and `to` (exclusive..inclusive, like
+ * `git rev-list --count A..B`). Returns null when either ref is unreachable
+ * or the cwd is not a git repo.
+ */
+function countCommitsBetween(cwd, from, to) {
+  const r = execGit(cwd, ['rev-list', '--count', `${from}..${to}`]);
+  if (r.exitCode !== 0) return null;
+  const n = parseInt(r.stdout.trim(), 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
  * Return status information about the knowledge graph (STAT-01, STAT-02).
+ *
+ * Surfaces the graphify v0.7+ commit-staleness signal as four optional
+ * fields when graph.built_at_commit is present and validly formatted
+ * (#3170). Tri-state on commit_stale: null means "we don't know" (pre-v0.7
+ * graph, no git, or unreachable commit), distinct from false ("known
+ * fresh").
  *
  * @param {string} cwd - Working directory
  * @returns {object}
@@ -333,6 +417,17 @@ function graphifyStatus(cwd) {
   const STALE_MS = 24 * 60 * 60 * 1000; // 24 hours
   const age = Date.now() - stat.mtimeMs;
 
+  // Commit-staleness signal (#3170). Validate before passing to git.
+  const rawBuilt = (graph.built_at_commit || '').toString().trim();
+  const builtAt = COMMIT_HASH_RE.test(rawBuilt) ? rawBuilt : null;
+  const head = readGitHead(cwd);
+  let commitsBehind = null;
+  let commitStale = null;
+  if (builtAt && head) {
+    commitsBehind = countCommitsBetween(cwd, builtAt, head);
+    if (commitsBehind !== null) commitStale = commitsBehind > 0;
+  }
+
   return {
     exists: true,
     last_build: stat.mtime.toISOString(),
@@ -341,6 +436,10 @@ function graphifyStatus(cwd) {
     hyperedge_count: (graph.hyperedges || []).length,
     stale: age > STALE_MS,
     age_hours: Math.round(age / (60 * 60 * 1000)),
+    built_at_commit: builtAt ? builtAt.slice(0, 7) : null,
+    current_commit: head ? head.slice(0, 7) : null,
+    commits_behind: commitsBehind,
+    commit_stale: commitStale,
   };
 }
 
@@ -475,6 +574,7 @@ module.exports = {
   disabledResponse,
   // Subprocess
   execGraphify,
+  GRAPHIFY_REASON,
   // Presence and version
   checkGraphifyInstalled,
   checkGraphifyVersion,
