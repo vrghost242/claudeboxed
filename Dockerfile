@@ -36,7 +36,10 @@ RUN printf '%s\n' \
     'APT::Sandbox::User "root";' \
     'Acquire::By-Hash "no";' \
     'Acquire::Retries "5";' \
+    'Acquire::Queue-Mode "access";' \
+    'Acquire::http::Pipeline-Depth "0";' \
     > /etc/apt/apt.conf.d/99-claudeboxed
+
 
 # ── System dependencies ───────────────────────────────────────────────────────
 RUN (apt-get update || (sleep 5 && apt-get update) || (sleep 20 && apt-get update)) && apt-get install -y --no-install-recommends \
@@ -79,21 +82,28 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # ── TypeScript tools + LSP ────────────────────────────────────────────────────
+# get-shit-done-cc is pinned to match the vendored plugin assets in
+# ClaudeBoxedMarket/plugins/gsd (currently v1.41.0). It provides the
+# `gsd-sdk` binary that the GSD plugin's agents/hooks shell out to.
+# Bump together with the vendored plugin bump.
 RUN npm install -g \
     typescript \
     ts-node \
     eslint \
     prettier \
     typescript-language-server \
-    @anthropic-ai/claude-code
+    @anthropic-ai/claude-code \
+    get-shit-done-cc@1.41.0
 
 # ── Playwright CLI + Chromium (headless browser for frontend testing) ─────────
 # PLAYWRIGHT_BROWSERS_PATH is set so browsers are installed to a shared location
 # accessible after the claude user uid is remapped at runtime.
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
 RUN npm install -g @playwright/mcp playwright \
+    && (apt-get update || (sleep 5 && apt-get update) || (sleep 20 && apt-get update)) \
     && npx playwright install --with-deps chromium \
-    && chmod -R o+rX /opt/playwright-browsers
+    && chmod -R o+rX /opt/playwright-browsers \
+    && rm -rf /var/lib/apt/lists/*
 
 # ── Python tools + LSP ────────────────────────────────────────────────────────
 RUN pip3 install --no-cache-dir --break-system-packages \

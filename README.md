@@ -40,13 +40,14 @@ The script checks your environment (Docker, Claude auth, Git, GitHub, AWS, MCP) 
 
 ```bash
 # Interactive session in the current directory
+# Defaults: --unsafe, plugins "gitlock gsd", --teammate-mode in-process
 ./claudeboxed
 
 # One-shot prompt
 ./claudeboxed "Write unit tests for src/parser.py"
 
-# Skip permission prompts (container boundary is your protection)
-./claudeboxed --unsafe
+# Re-enable permission prompts for this run (overrides the unsafe default)
+./claudeboxed --safe
 
 # Force rebuild the image before starting
 ./claudeboxed --build
@@ -54,15 +55,21 @@ The script checks your environment (Docker, Claude auth, Git, GitHub, AWS, MCP) 
 # Run in a git worktree (isolated branch for parallel agents)
 ./claudeboxed --worktree content
 
-# Load an opt-in marketplace plugin (repeatable)
-./claudeboxed --plugin gsd
+# Add an extra marketplace plugin on top of the defaults (repeatable)
+./claudeboxed --plugin <name>
+
+# Drop a default plugin for this run (repeatable)
+./claudeboxed --no-plugin gsd
+
+# Override the teammate spawn mode (tmux|in-process|auto)
+./claudeboxed --teammate-mode tmux
 ```
 
 The first run builds the Docker image automatically.
 
 ### Marketplace plugins
 
-ClaudeBoxed ships a small plugin marketplace at `ClaudeBoxedMarket/`, bind-mounted into the container at `/opt/claude-market`. `gitlock` is loaded by default; others (e.g. `gsd` — [Get Shit Done](https://github.com/gsd-build/get-shit-done)) are opt-in via `--plugin <name>`, repeatable.
+ClaudeBoxed ships a small plugin marketplace at `ClaudeBoxedMarket/`, bind-mounted into the container at `/opt/claude-market`. `gitlock` and `gsd` ([Get Shit Done](https://github.com/gsd-build/get-shit-done)) are loaded by default. Add others with `--plugin <name>` (repeatable) or drop a default with `--no-plugin <name>`.
 
 Plugins live fully inside the container — nothing is written to `~/.claude/plugins/`, so host state is unaffected. To update the vendored copy of GSD, bump the tag in `ClaudeBoxedMarket/plugins/gsd/.vendor.sh` and re-run it.
 
@@ -72,9 +79,9 @@ Use `--worktree` to give each agent its own isolated branch and working director
 
 ```bash
 # Open separate terminals and launch one agent per service
-./claudeboxed --worktree content --unsafe
-./claudeboxed --worktree document --unsafe
-./claudeboxed --worktree progress --unsafe
+./claudeboxed --worktree content
+./claudeboxed --worktree document
+./claudeboxed --worktree progress
 ```
 
 Worktrees are created as sibling directories (`../<repo>-<name>`) on branch `worktree-<name>`. When each agent finishes, merge the branch via PR. To clean up:
@@ -230,7 +237,7 @@ If you don't want Docker socket access, remove the `/var/run/docker.sock` volume
 ## Security notes
 
 - The container runs as a **non-root** user (`claude`, uid 1000 by default, remapped at runtime).
-- `--unsafe` / `--dangerously-skip-permissions` bypasses Claude's interactive approval prompts. Only use it inside containers with trusted repositories — the container boundary is your protection.
+- The launcher defaults to `--unsafe` (`--dangerously-skip-permissions`), which bypasses Claude's interactive approval prompts. The container boundary is your protection — only run ClaudeBoxed against trusted repositories. Use `--safe` to re-enable prompts for a given run.
 - SSH keys, git config, and AWS credentials are mounted **read-only**.
 - `GH_TOKEN` is only passed into the container when set in the host environment.
 - Your host filesystem outside `$PWD` is not accessible to Claude.

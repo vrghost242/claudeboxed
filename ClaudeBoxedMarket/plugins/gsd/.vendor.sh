@@ -17,7 +17,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
-GSD_TAG="${1:-v1.38.1}"
+GSD_TAG="${1:-v1.41.0}"
 REPO="gsd-build/get-shit-done"
 PLUGIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONTAINER_PATH="/opt/claude-market/plugins/gsd/get-shit-done"

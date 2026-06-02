@@ -3,19 +3,25 @@
 # claudeboxed — Claude Code container launcher
 #
 # Usage:
-#   ./claudeboxed                          Start an interactive Claude Code session
-#   ./claudeboxed "Fix the failing tests"  Run a one-shot prompt and exit
-#   ./claudeboxed --unsafe                 Start without permission prompts (devcontainer)
-#   ./claudeboxed --build                  Rebuild the image before starting
-#   ./claudeboxed --host-network            Force host network (Linux default, no-op on Mac)
-#   ./claudeboxed --worktree content       Run in a git worktree (isolated branch)
-#   ./claudeboxed --plugin gsd             Load an opt-in marketplace plugin (repeatable)
-#   ./claudeboxed --help                   Show this help
+#   ./claudeboxed                              Start an interactive Claude Code session
+#   ./claudeboxed "Fix the failing tests"      Run a one-shot prompt and exit
+#   ./claudeboxed --safe                       Re-enable permission prompts for this run
+#   ./claudeboxed --build                      Rebuild the image before starting
+#   ./claudeboxed --host-network               Force host network (Linux default, no-op on Mac)
+#   ./claudeboxed --worktree content           Run in a git worktree (isolated branch)
+#   ./claudeboxed --plugin <name>              Add an extra marketplace plugin (repeatable)
+#   ./claudeboxed --no-plugin <name>           Disable a plugin from the defaults (repeatable)
+#   ./claudeboxed --teammate-mode <mode>       Override teammate spawn mode (tmux|in-process|auto)
+#   ./claudeboxed --help                       Show this help
+#
+# Defaults:
+#   --unsafe (--dangerously-skip-permissions), plugins "gitlock gsd",
+#   --teammate-mode in-process. Override with the inverse flags above.
 #
 # Plugin loading:
-#   By default, only plugins listed in PLUGINS_DEFAULT below are active. Use
-#   --plugin <name> to enable additional ones (e.g. gsd). The flag can be
-#   passed multiple times. See ClaudeBoxedMarket/marketplace.json for the list.
+#   PLUGINS_DEFAULT below is loaded by default; --plugin <name> adds more,
+#   --no-plugin <name> removes one from the default set. See
+#   ClaudeBoxedMarket/marketplace.json for the available list.
 #
 # Prerequisites:
 #   - Docker running
@@ -25,21 +31,24 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 IMAGE_NAME="claude-code:latest"
-UNSAFE=false
+UNSAFE=true
 BUILD=false
 HOST_NETWORK=false
 WORKTREE_NAME=""
+TEAMMATE_MODE="in-process"
 PROMPT_ARGS=()
 
-# Plugins loaded by default (space-separated). Other plugins from
-# ClaudeBoxedMarket are opt-in via --plugin <name>.
-PLUGINS_DEFAULT="gitlock"
+# Plugins loaded by default (space-separated). Add more with --plugin <name>,
+# remove one with --no-plugin <name>.
+PLUGINS_DEFAULT="gitlock gsd"
 EXTRA_PLUGINS=()
+DISABLED_PLUGINS=()
 
 # ── Argument parsing ──────────────────────────────────────────────────────────
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --unsafe)        UNSAFE=true; shift ;;
+    --safe)          UNSAFE=false; shift ;;
     --build)         BUILD=true; shift ;;
     --host-network)  HOST_NETWORK=true; shift ;;
     --worktree)
@@ -56,6 +65,22 @@ while [[ $# -gt 0 ]]; do
         exit 1
       fi
       EXTRA_PLUGINS+=("$2")
+      shift 2
+      ;;
+    --no-plugin)
+      if [[ -z "${2:-}" || "$2" == --* ]]; then
+        echo "Error: --no-plugin requires a name (e.g. --no-plugin gsd)" >&2
+        exit 1
+      fi
+      DISABLED_PLUGINS+=("$2")
+      shift 2
+      ;;
+    --teammate-mode)
+      if [[ -z "${2:-}" || "$2" == --* ]]; then
+        echo "Error: --teammate-mode requires a value (tmux|in-process|auto)" >&2
+        exit 1
+      fi
+      TEAMMATE_MODE="$2"
       shift 2
       ;;
     --help|-h)
@@ -160,11 +185,21 @@ DOCKER_ARGS+=(-e "HOST_UID=$(id -u)" -e "HOST_GID=$(id -g)")
 [[ -n "${AWS_PROFILE:-}" ]]  && DOCKER_ARGS+=(-e "AWS_PROFILE=${AWS_PROFILE}")
 
 # Active plugin allowlist — the entrypoint uses this to pick which plugin dirs
-# to pass to `claude --plugin-dir`. Default set + any --plugin flags.
-CLAUDEBOXED_PLUGINS="$PLUGINS_DEFAULT"
-if [[ ${#EXTRA_PLUGINS[@]} -gt 0 ]]; then
-  CLAUDEBOXED_PLUGINS="$CLAUDEBOXED_PLUGINS ${EXTRA_PLUGINS[*]}"
-fi
+# to pass to `claude --plugin-dir`. Default set, plus --plugin additions,
+# minus --no-plugin removals. Order is preserved; duplicates are dropped.
+declare -a PLUGIN_LIST=()
+for p in $PLUGINS_DEFAULT ${EXTRA_PLUGINS[@]+"${EXTRA_PLUGINS[@]}"}; do
+  skip=false
+  for d in ${DISABLED_PLUGINS[@]+"${DISABLED_PLUGINS[@]}"}; do
+    [[ "$p" == "$d" ]] && { skip=true; break; }
+  done
+  $skip && continue
+  for existing in ${PLUGIN_LIST[@]+"${PLUGIN_LIST[@]}"}; do
+    [[ "$p" == "$existing" ]] && { skip=true; break; }
+  done
+  $skip || PLUGIN_LIST+=("$p")
+done
+CLAUDEBOXED_PLUGINS="${PLUGIN_LIST[*]}"
 DOCKER_ARGS+=(-e "CLAUDEBOXED_PLUGINS=${CLAUDEBOXED_PLUGINS}")
 
 # Mount Docker socket so Claude can build/run sibling containers
@@ -214,6 +249,10 @@ if $UNSAFE; then
   DOCKER_ARGS+=(--dangerously-skip-permissions)
 fi
 
+if [[ -n "$TEAMMATE_MODE" ]]; then
+  DOCKER_ARGS+=(--teammate-mode "$TEAMMATE_MODE")
+fi
+
 if [[ ${#PROMPT_ARGS[@]} -gt 0 ]]; then
   DOCKER_ARGS+=("${PROMPT_ARGS[@]}")
 fi
@@ -221,6 +260,8 @@ fi
 echo "🚀  Launching Claude Code in Docker..."
 echo "    Workspace: ${WORKSPACE_DIR}"
 echo "    Plugins:   ${CLAUDEBOXED_PLUGINS}"
+echo "    Teammate:  ${TEAMMATE_MODE}"
+$UNSAFE && echo "    Perms:     bypassed (--unsafe)" || echo "    Perms:     interactive (--safe)"
 if [[ -n "$WORKTREE_NAME" ]]; then
   echo "    Worktree:  ${WORKTREE_NAME} (branch: ${WORKTREE_BRANCH})"
 fi
